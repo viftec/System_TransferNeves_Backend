@@ -165,11 +165,23 @@ ridesRoutes.patch('/:id/status', async (c) => {
   const { status } = await c.req.json()
   const user = c.get('jwtPayload')
 
+  // Verificar se a corrida existe
+  const existing = await db.select().from(rides).where(eq(rides.id, id)).get()
+  if (!existing) return c.json({ error: 'Corrida não encontrada' }, 404)
+
+  // Apenas admin pode colocar corrida em 'editando' ou cancelar
+  const adminOnlyStatuses = ['editando', 'cancelada']
+  if (adminOnlyStatuses.includes(status) && user.role !== 'admin') {
+    return c.json({ error: 'Sem permissão' }, 403)
+  }
+
   const eventDescriptions: Record<string, string> = {
     aceita: 'Corrida aceita pelo motorista',
     andamento: 'Corrida iniciada',
     concluida: 'Corrida concluída',
     cancelada: 'Corrida cancelada',
+    editando: 'Corrida em edição pelo administrador',
+    disponivel: 'Corrida disponível',
   }
 
   await db.update(rides).set({ status, updatedAt: new Date().toISOString() }).where(eq(rides.id, id))
@@ -191,4 +203,85 @@ ridesRoutes.delete('/:id', adminOnly, async (c) => {
   const id = c.req.param('id') as string
   await db.delete(rides).where(eq(rides.id, id))
   return c.json({ success: true })
+})
+
+// PUT /api/rides/:id — edita corrida (admin only)
+ridesRoutes.put('/:id', adminOnly, zValidator('json', createRideSchema), async (c) => {
+  const db = getDb(c.env.DB)
+  const id = c.req.param('id') as string
+  const body = c.req.valid('json')
+  const user = c.get('jwtPayload')
+
+  const existingRide = await db.select().from(rides).where(eq(rides.id, id)).get()
+  if (!existingRide) return c.json({ error: 'Corrida não encontrada' }, 404)
+
+  // Segurança: só pode editar corridas que estão no status 'editando' (bloqueadas para edição)
+  if (existingRide.status !== 'editando') {
+    return c.json({ error: 'Corrida não está em modo de edição. Acesso bloqueado.' }, 409)
+  }
+
+  // Mapeamento de tipo
+  const dbType = body.type === 'passageiro' ? 'passageiros' : 'carga';
+  
+  // Mapeamento de pagamento
+  let dbPayment: 'card' | 'transfer' | 'cash' | 'billed' = 'billed';
+  if (body.payment === 'cartao') dbPayment = 'card';
+  if (body.payment === 'dinheiro') dbPayment = 'cash';
+  if (body.payment === 'pix') dbPayment = 'transfer';
+  
+  const originParts = body.origin.split(',').map(s => s.trim());
+  const originCity = originParts.length > 2 ? originParts[2] : originParts[originParts.length - 1] || 'Não informada';
+  
+  const destParts = body.destination.split(',').map(s => s.trim());
+  const destCity = destParts.length > 2 ? destParts[2] : destParts[destParts.length - 1] || 'Não informada';
+
+  let isRecurring = false;
+  if (body.clientId) {
+    const client = await db.select().from(clients).where(eq(clients.id, body.clientId)).get();
+    if (client && client.isRecurring === true) {
+      isRecurring = true;
+    }
+  }
+
+  const ride = await db.update(rides).set({
+    clientId: body.clientId,
+    clientName: body.clientName,
+    originStreet: body.origin,
+    originCity: originCity,
+    destStreet: body.destination,
+    destCity: destCity,
+    scheduledDate: body.date,
+    scheduledTime: body.time,
+    paymentMethod: dbPayment,
+    value: body.value,
+    notes: body.notes,
+    type: dbType,
+    isRecurring,
+    
+    // Passageiros
+    passengerCount: body.passengerCount,
+    hasLuggage: body.hasLuggage ?? false,
+    luggageDescription: body.luggageDescription,
+    
+    // Carga
+    cargoWeightKg: body.cargoWeight,
+    cargoWidth: body.cargoWidth,
+    cargoLength: body.cargoLength,
+    cargoHeight: body.cargoHeight,
+    cargoType: body.cargoType,
+    cargoFragile: body.cargoFragile ?? false,
+    
+    status: 'disponivel', // Volta para disponível após edição
+    updatedAt: new Date().toISOString()
+  }).where(eq(rides.id, id)).returning().get()
+
+  await db.insert(rideEvents).values({
+    id: crypto.randomUUID(),
+    rideId: ride.id,
+    event: 'edited',
+    description: 'Corrida editada pelo administrador',
+    userId: user.sub,
+  })
+
+  return c.json({ ride }, 200)
 })

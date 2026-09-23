@@ -131,7 +131,7 @@ export const rides = sqliteTable('rides', {
   scheduledTime:    text('scheduled_time').notNull(),
   value:            real('value').notNull(),
   paymentMethod:    text('payment_method', { enum: ['card', 'transfer', 'cash', 'billed'] }).notNull().default('billed'),
-  status:           text('status', { enum: ['disponivel', 'aceita', 'andamento', 'concluida', 'cancelada'] }).notNull().default('disponivel'),
+  status:           text('status', { enum: ['disponivel', 'aceita', 'andamento', 'concluida', 'cancelada', 'editando'] }).notNull().default('disponivel'),
   notes:            text('notes'),
   isRecurring:      integer('is_recurring', { mode: 'boolean' }).notNull().default(false),
   requiresPhoto:    integer('requires_photo', { mode: 'boolean' }).notNull().default(false),
