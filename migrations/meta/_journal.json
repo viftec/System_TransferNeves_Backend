@@ -1,0 +1,27 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1789648465776,
+      "tag": "0000_amazing_tigra",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789731369580,
+      "tag": "0001_nostalgic_ghost_rider",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789732232204,
+      "tag": "0002_heavy_garia",
+      "breakpoints": true
+    }
+  ]
+}

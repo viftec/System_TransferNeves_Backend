@@ -1,0 +1,1 @@
+ALTER TABLE `rides` DROP COLUMN `cargo_notes`;
