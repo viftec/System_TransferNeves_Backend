@@ -14,8 +14,9 @@ bucket_name = "transferneves"
 
 [vars]
 ENVIRONMENT = "development"
-# JWT_SECRET local para desenvolvimento — em produção use: wrangler secret put JWT_SECRET
-JWT_SECRET = "transferneves-dev-secret-mude-em-producao-12345"
+# JWT_SECRET deve ser configurado via: wrangler secret put JWT_SECRET
+# Para local: wrangler secret put JWT_SECRET --local
+# Para produção: wrangler secret put JWT_SECRET
 
 # Para rodar localmente com D1 local, use: wrangler dev --local
 # O database_id só é necessário para wrangler deploy (remoto)

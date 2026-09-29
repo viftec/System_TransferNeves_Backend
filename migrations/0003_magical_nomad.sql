@@ -1,0 +1,3 @@
+-- ALTER TABLE `clients` ADD `deleted_at` text;--> statement-breakpoint
+-- ALTER TABLE `rides` ADD `is_recurring` integer DEFAULT false NOT NULL;--> statement-breakpoint
+-- ALTER TABLE `rides` ADD `deleted_at` text;

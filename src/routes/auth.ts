@@ -5,6 +5,7 @@ import { hashPassword, verifyPassword } from '../lib/hash'
 import { signToken } from '../lib/jwt'
 import { eq } from 'drizzle-orm'
 import { sendVerificationEmail, sendPasswordResetEmail } from '../lib/brevo'
+import { checkRateLimit } from '../lib/rate-limit'
 import type { Env } from '../middleware/auth'
 
 export const authRoutes = new Hono<{ Bindings: Env }>()
@@ -16,6 +17,15 @@ authRoutes.post('/login', async (c) => {
 
     if (!email || !password) {
       return c.json({ error: 'Email e senha são obrigatórios' }, 400)
+    }
+
+    // Rate limiting by email
+    const rateLimit = await checkRateLimit(c.env.DB, email, 'login')
+    if (!rateLimit.allowed) {
+      return c.json({ 
+        error: 'Muitas tentativas de login. Tente novamente mais tarde.',
+        blockedUntil: rateLimit.blockedUntil
+      }, 429)
     }
 
     const db = getDb(c.env.DB)
@@ -79,6 +89,22 @@ authRoutes.post('/register', async (c) => {
       return c.json({ error: 'Campos obrigatórios: email, password, name, role' }, 400)
     }
 
+    if (name.length > 120) {
+      return c.json({ error: 'Nome muito longo (máximo 120 caracteres)' }, 400)
+    }
+
+    if (email.length > 150) {
+      return c.json({ error: 'E-mail muito longo (máximo 150 caracteres)' }, 400)
+    }
+
+    if (phone && phone.length > 20) {
+      return c.json({ error: 'Telefone muito longo (máximo 20 caracteres)' }, 400)
+    }
+
+    if (password.length > 100) {
+      return c.json({ error: 'Senha muito longa (máximo 100 caracteres)' }, 400)
+    }
+
     const db = getDb(c.env.DB)
     const passwordHash = await hashPassword(password)
 
@@ -125,9 +151,9 @@ authRoutes.post('/forgot-password', async (c) => {
       .set({ resetToken, resetTokenCreatedAt: now })
       .where(eq(users.id, user.id))
 
-    const frontendUrl = c.env.ENVIRONMENT === 'development' 
-      ? 'http://localhost:3000' 
-      : 'https://seu-dominio.com' // Adjust domain as needed
+    const frontendUrl = c.env.ENVIRONMENT === 'development'
+      ? 'http://localhost:3000'
+      : 'https://transferneves.pages.dev'
 
     const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`
     await sendPasswordResetEmail(apiKey, user.email, user.name, resetUrl)
@@ -235,10 +261,25 @@ authRoutes.get('/check-email', async (c) => {
 // POST /api/auth/register-driver
 authRoutes.post('/register-driver', async (c) => {
   try {
-    const { name, email, phone, password, cnh, street, plate, color, model, type } = await c.req.json()
+    const { name, email, phone, password, cpf, cnh, street, city, cities, plate, color, model, type } = await c.req.json()
 
-    if (!name || !email || !phone || !password || !cnh || !street || !plate || !color || !model || !type) {
+    if (!name || !email || !phone || !password || !cpf || !cnh || !street || !city || !plate || !color || !model || !type) {
       return c.json({ error: 'Todos os campos são obrigatórios' }, 400)
+    }
+
+    // Rate limiting by email
+    const rateLimit = await checkRateLimit(c.env.DB, email, 'register')
+    if (!rateLimit.allowed) {
+      return c.json({ 
+        error: 'Muitas tentativas de registro. Tente novamente mais tarde.',
+        blockedUntil: rateLimit.blockedUntil
+      }, 429)
+    }
+
+    // Validate CPF format
+    const cleanCPF = cpf.replace(/\D/g, '')
+    if (cleanCPF.length !== 11) {
+      return c.json({ error: 'CPF inválido' }, 400)
     }
 
     // Security validation for strong password
@@ -299,8 +340,10 @@ authRoutes.post('/register-driver', async (c) => {
       userId,
       cnh,
       street,
+      city,
+      cities: cities && cities.length > 0 ? JSON.stringify(cities) : null,
       status: 'pending',
-      cpf: '00000000000', // Default since user didn't request CPF for now
+      cpf: cleanCPF,
     })
 
     // Create Vehicle
@@ -314,9 +357,9 @@ authRoutes.post('/register-driver', async (c) => {
     })
 
     // Enviar E-mail via Brevo
-    const frontendUrl = c.env.ENVIRONMENT === 'development' 
-      ? 'http://localhost:3000' 
-      : 'https://seu-dominio.com'
+    const frontendUrl = c.env.ENVIRONMENT === 'development'
+      ? 'http://localhost:3000'
+      : 'https://transferneves.pages.dev'
       
     const verificationUrl = `${frontendUrl}/verify?token=${verificationToken}`
 

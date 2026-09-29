@@ -29,6 +29,19 @@ export async function authMiddleware(c: Context<{ Bindings: Env }>, next: Next) 
 
   try {
     const payload = await verifyToken(token, secret)
+    
+    // Verifica se o usuário ainda existe no banco
+    const { getDb } = await import('../db')
+    const { users } = await import('../db/schema')
+    const { eq } = await import('drizzle-orm')
+    
+    const db = getDb(c.env.DB)
+    const user = await db.select().from(users).where(eq(users.id, payload.sub)).get()
+    
+    if (!user || !user.active) {
+      return c.json({ error: 'Sessão inválida ou usuário inativo' }, 401)
+    }
+
     c.set('jwtPayload', payload)
     await next()
   } catch {

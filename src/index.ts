@@ -14,7 +14,7 @@ app.use('/*', cors({
   origin: [
     'http://localhost:3000',
     'http://10.0.70.125:3000',
-    'https://transferneves.pages.dev',  // ajuste para seu domínio no Pages
+    'https://transferneves.pages.dev',
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
@@ -40,7 +40,7 @@ app.notFound((c) => c.json({ error: 'Rota não encontrada' }, 404))
 // Erro global
 app.onError((err, c) => {
   console.error('Unhandled error:', err)
-  return c.json({ error: 'Erro interno do servidor' }, 500)
+  return c.json({ error: 'Erro interno do servidor', details: err.message }, 500)
 })
 
 export default app

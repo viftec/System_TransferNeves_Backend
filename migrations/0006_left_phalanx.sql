@@ -1,0 +1,1 @@
+ALTER TABLE `drivers` ADD `cities` text;

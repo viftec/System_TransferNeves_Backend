@@ -74,9 +74,10 @@ const createDriverSchema = z.object({
     city: z.string().max(100).optional(),
     state: z.string().max(2).optional(),
     cep: z.string().max(10).optional(),
+    cities: z.array(z.string()).optional(),
   }),
   vehicle: z.object({
-    type: z.enum(['sedan', 'suv', 'hatch', 'utilitario', 'caminhao']),
+    type: z.enum(['sedan', 'suv', 'hatch', 'van', 'caminhonete', 'caminhao']),
     model: z.string().min(2).max(100),
     plate: z.string().min(7).max(10),
     year: z.number().int().min(1990).max(new Date().getFullYear() + 1).optional(),
@@ -123,6 +124,7 @@ driversRoutes.post('/', adminOnly, zValidator('json', createDriverSchema), async
     city: driverData.city,
     state: driverData.state,
     cep: driverData.cep,
+    cities: driverData.cities ? JSON.stringify(driverData.cities) : null,
     status: 'approved',
   }).returning().get()
 
@@ -226,8 +228,14 @@ const editDriverSchema = z.object({
     cpf: z.string().min(11).max(14),
     cnh: z.string().min(8).max(20),
     cnhExpiry: z.string().optional(),
+    street: z.string().max(255).optional(),
+    number: z.string().max(20).optional(),
+    complement: z.string().max(100).optional(),
+    neighborhood: z.string().max(100).optional(),
     city: z.string().max(100).optional(),
     state: z.string().max(2).optional(),
+    cep: z.string().max(10).optional(),
+    cities: z.array(z.string()).optional(),
   }),
   vehicle: z.object({
     type: z.string(),
@@ -274,8 +282,14 @@ driversRoutes.put('/:id', adminOnly, zValidator('json', editDriverSchema), async
     cpf: driverData.cpf,
     cnh: driverData.cnh,
     cnhExpiry: driverData.cnhExpiry || null,
+    street: driverData.street || null,
+    number: driverData.number || null,
+    complement: driverData.complement || null,
+    neighborhood: driverData.neighborhood || null,
     city: driverData.city || null,
     state: driverData.state || null,
+    cep: driverData.cep || null,
+    cities: driverData.cities ? JSON.stringify(driverData.cities) : null,
   }).where(eq(drivers.id, id))
 
   if (vehicleData) {
@@ -286,7 +300,7 @@ driversRoutes.put('/:id', adminOnly, zValidator('json', editDriverSchema), async
         if (plateTaken) return c.json({ error: 'Esta placa já está cadastrada' }, 409)
       }
       await db.update(vehicles).set({
-        type: vehicleData.type as "sedan" | "suv" | "hatch" | "utilitario" | "caminhao",
+        type: vehicleData.type as "sedan" | "suv" | "hatch" | "van" | "caminhonete" | "caminhao",
         model: vehicleData.model,
         plate: vehicleData.plate.toUpperCase(),
         year: vehicleData.year || null,
@@ -298,7 +312,7 @@ driversRoutes.put('/:id', adminOnly, zValidator('json', editDriverSchema), async
       await db.insert(vehicles).values({
         id: crypto.randomUUID(),
         driverId: id,
-        type: vehicleData.type as "sedan" | "suv" | "hatch" | "utilitario" | "caminhao",
+        type: vehicleData.type as "sedan" | "suv" | "hatch" | "van" | "caminhonete" | "caminhao",
         model: vehicleData.model,
         plate: vehicleData.plate.toUpperCase(),
         year: vehicleData.year || null,
