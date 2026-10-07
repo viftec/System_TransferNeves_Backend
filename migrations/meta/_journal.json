@@ -57,6 +57,13 @@
       "when": 1790712045161,
       "tag": "0007_dazzling_gressill",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791289493242,
+      "tag": "0008_complex_william_stryker",
+      "breakpoints": true
     }
   ]
 }

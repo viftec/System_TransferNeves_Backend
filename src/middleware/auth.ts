@@ -7,6 +7,9 @@ export interface Env {
   JWT_SECRET: string
   BREVO_API_KEY: string
   ENVIRONMENT?: string
+  VAPID_PUBLIC_KEY?: string
+  VAPID_PRIVATE_KEY?: string
+  VAPID_SUBJECT?: string
 }
 
 declare module 'hono' {

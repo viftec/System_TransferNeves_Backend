@@ -3,6 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2024-03-20"
 compatibility_flags = ["nodejs_compat"]
 
+# Cron trigger para verificar corridas expiradas (a cada 1 minuto)
+[triggers]
+crons = ["* * * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "transferneves"
@@ -13,7 +17,7 @@ binding = "FILES"
 bucket_name = "transferneves"
 
 [vars]
-ENVIRONMENT = "development"
+ENVIRONMENT = "production"
 # JWT_SECRET deve ser configurado via: wrangler secret put JWT_SECRET
 # Para local: wrangler secret put JWT_SECRET --local
 # Para produção: wrangler secret put JWT_SECRET

@@ -43,6 +43,7 @@ export const drivers = sqliteTable('drivers', {
   rating:           real('rating').default(0),
   totalRides:       integer('total_rides').notNull().default(0),
   avatarKey:        text('avatar_key'),  // chave no R2
+  preferredVehicleType: text('preferred_vehicle_type'), // Tipo de veículo que o motorista prefere usar
   createdAt:        text('created_at').notNull().default(sql`(datetime('now'))`),
   updatedAt:        text('updated_at').notNull().default(sql`(datetime('now'))`),
 })
@@ -133,9 +134,11 @@ export const rides = sqliteTable('rides', {
   city:             text('city'),
   scheduledDate:    text('scheduled_date').notNull(),
   scheduledTime:    text('scheduled_time').notNull(),
+  scheduledAt:      text('scheduled_at'), // datetime combinado para facilitar comparações
+  expiresAt:        text('expires_at'), // datetime limite para aceitação (scheduledAt + 5 min)
   value:            real('value').notNull(),
   paymentMethod:    text('payment_method', { enum: ['card', 'transfer', 'cash', 'billed'] }).notNull().default('billed'),
-  status:           text('status').notNull().default('disponivel'),
+  status:           text('status', { enum: ['disponivel', 'aceita', 'andamento', 'concluida', 'cancelada', 'sem_motoristas', 'editando', 'nao_iniciada'] }).notNull().default('disponivel'),
   notes:            text('notes'),
   isRecurring:      integer('is_recurring', { mode: 'boolean' }).notNull().default(false),
   requiresPhoto:    integer('requires_photo', { mode: 'boolean' }).notNull().default(false),
@@ -161,17 +164,19 @@ export const rideEvents = sqliteTable('ride_events', {
 })
 
 // ─────────────────────────────────────────────
-// RATE LIMITS (prevenir abuso em login/registro)
+// PUSH SUBSCRIPTIONS (Web Push para motoristas)
 // ─────────────────────────────────────────────
-export const rateLimits = sqliteTable('rate_limits', {
-  id:          text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  identifier:  text('identifier').notNull(), // IP ou email
-  endpoint:    text('endpoint').notNull(), // 'login', 'register', etc
-  attempts:    integer('attempts').notNull().default(1),
-  lastAttempt: text('last_attempt').notNull().default(sql`(datetime('now'))`),
-  blockedUntil: text('blocked_until'), // timestamp até quando está bloqueado
-  createdAt:   text('created_at').notNull().default(sql`(datetime('now'))`),
-  updatedAt:   text('updated_at').notNull().default(sql`(datetime('now'))`),
+export const pushSubscriptions = sqliteTable('push_subscriptions', {
+  id:         text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId:     text('user_id').notNull().references(() => users.id),   // qualquer user (motorista ou admin)
+  driverId:   text('driver_id').references(() => drivers.id),         // preenchido se for motorista
+  endpoint:   text('endpoint').notNull(),
+  p256dhKey:  text('p256dh_key').notNull(),
+  authKey:    text('auth_key').notNull(),
+  userAgent:  text('user_agent'),
+  active:     integer('active', { mode: 'boolean' }).notNull().default(true),
+  createdAt:  text('created_at').notNull().default(sql`(datetime('now'))`),
+  updatedAt:  text('updated_at').notNull().default(sql`(datetime('now'))`),
 })
 
 // ─────────────────────────────────────────────

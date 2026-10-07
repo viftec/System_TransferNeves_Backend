@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { getDb } from '../db'
-import { drivers, vehicles, users } from '../db/schema'
+import { drivers, vehicles, users, pushSubscriptions } from '../db/schema'
 import { eq, desc } from 'drizzle-orm'
 import { authMiddleware, adminOnly, type Env } from '../middleware/auth'
 import { hashPassword } from '../lib/hash'
@@ -18,7 +18,21 @@ driversRoutes.get('/', adminOnly, async (c) => {
     driver: drivers,
     user: { id: users.id, email: users.email, name: users.name, phone: users.phone },
   }).from(drivers).leftJoin(users, eq(drivers.userId, users.id)).orderBy(desc(drivers.createdAt)).all()
-  return c.json({ drivers: result })
+
+  // Fetch all vehicles in one query and group by driverId
+  const allVehicles = await db.select().from(vehicles).all()
+  const vehiclesByDriver: Record<string, typeof allVehicles> = {}
+  for (const v of allVehicles) {
+    if (!vehiclesByDriver[v.driverId]) vehiclesByDriver[v.driverId] = []
+    vehiclesByDriver[v.driverId].push(v)
+  }
+
+  const mapped = result.map(r => ({
+    ...r,
+    vehicles: vehiclesByDriver[r.driver.id] ?? [],
+  }))
+
+  return c.json({ drivers: mapped })
 })
 
 // GET /api/drivers/admins
@@ -53,7 +67,22 @@ driversRoutes.get('/:id', async (c) => {
 
   const driverVehicles = await db.select().from(vehicles).where(eq(vehicles.driverId, id)).all()
   const driverUser = await db.select({ id: users.id, email: users.email, name: users.name, phone: users.phone }).from(users).where(eq(users.id, driver.userId)).get()
-  return c.json({ driver, vehicles: driverVehicles, user: driverUser })
+
+  // Transform address fields to nested object for frontend
+  const driverWithAddress = {
+    ...driver,
+    address: {
+      street: driver.street,
+      number: driver.number,
+      complement: driver.complement,
+      neighborhood: driver.neighborhood,
+      city: driver.city,
+      state: driver.state,
+      cep: driver.cep,
+    }
+  }
+
+  return c.json({ driver: driverWithAddress, vehicles: driverVehicles, user: driverUser })
 })
 
 const createDriverSchema = z.object({
@@ -76,19 +105,19 @@ const createDriverSchema = z.object({
     cep: z.string().max(10).optional(),
     cities: z.array(z.string()).optional(),
   }),
-  vehicle: z.object({
+  vehicles: z.array(z.object({
     type: z.enum(['sedan', 'suv', 'hatch', 'van', 'caminhonete', 'caminhao']),
     model: z.string().min(2).max(100),
     plate: z.string().min(7).max(10),
     year: z.number().int().min(1990).max(new Date().getFullYear() + 1).optional(),
     color: z.string().max(50).optional(),
-  }).optional(),
+  })).min(1, 'É obrigatório cadastrar pelo menos 1 veículo').max(5, 'Máximo de 5 veículos permitidos').optional(),
 })
 
 // POST /api/drivers — cria motorista + usuário (admin only)
 driversRoutes.post('/', adminOnly, zValidator('json', createDriverSchema), async (c) => {
   const db = getDb(c.env.DB)
-  const { user: userData, driver: driverData, vehicle: vehicleData } = c.req.valid('json')
+  const { user: userData, driver: driverData, vehicles: vehiclesData } = c.req.valid('json')
 
   // Verificar email duplicado
   const existingUser = await db.select().from(users).where(eq(users.email, userData.email.toLowerCase())).get()
@@ -128,26 +157,29 @@ driversRoutes.post('/', adminOnly, zValidator('json', createDriverSchema), async
     status: 'approved',
   }).returning().get()
 
-  let newVehicle = null
-  if (vehicleData) {
-    const existingVehicle = await db.select().from(vehicles).where(eq(vehicles.plate, vehicleData.plate.toUpperCase())).get()
-    if (existingVehicle) return c.json({ error: 'Esta placa já está cadastrada' }, 409)
+  let insertedVehicles = []
+  if (vehiclesData && vehiclesData.length > 0) {
+    for (const vData of vehiclesData) {
+      const existingVehicle = await db.select().from(vehicles).where(eq(vehicles.plate, vData.plate.toUpperCase())).get()
+      if (existingVehicle) return c.json({ error: `A placa ${vData.plate} já está cadastrada` }, 409)
 
-    newVehicle = await db.insert(vehicles).values({
-      id: crypto.randomUUID(),
-      driverId: newDriver.id,
-      type: vehicleData.type,
-      model: vehicleData.model,
-      plate: vehicleData.plate.toUpperCase(),
-      year: vehicleData.year,
-      color: vehicleData.color,
-    }).returning().get()
+      const newVehicle = await db.insert(vehicles).values({
+        id: crypto.randomUUID(),
+        driverId: newDriver.id,
+        type: vData.type,
+        model: vData.model,
+        plate: vData.plate.toUpperCase(),
+        year: vData.year,
+        color: vData.color,
+      }).returning().get()
+      insertedVehicles.push(newVehicle)
+    }
   }
 
   return c.json({ 
     user: { id: newUser.id, email: newUser.email, name: newUser.name, phone: newUser.phone, role: newUser.role, active: newUser.active }, 
     driver: newDriver, 
-    vehicle: newVehicle 
+    vehicles: insertedVehicles 
   }, 201)
 })
 
@@ -237,20 +269,20 @@ const editDriverSchema = z.object({
     cep: z.string().max(10).optional(),
     cities: z.array(z.string()).optional(),
   }),
-  vehicle: z.object({
+  vehicles: z.array(z.object({
     type: z.string(),
     model: z.string(),
     plate: z.string(),
     year: z.number().optional(),
     color: z.string().optional(),
-  }).optional()
+  })).min(1).max(5).optional()
 })
 
 // PUT /api/drivers/:id — edita motorista (admin only)
 driversRoutes.put('/:id', adminOnly, zValidator('json', editDriverSchema), async (c) => {
   const db = getDb(c.env.DB)
   const id = c.req.param('id') as string
-  const { user: userData, driver: driverData, vehicle: vehicleData } = c.req.valid('json')
+  const { user: userData, driver: driverData, vehicles: vehiclesData } = c.req.valid('json')
 
   const driver = await db.select().from(drivers).where(eq(drivers.id, id)).get()
   if (!driver) return c.json({ error: 'Motorista não encontrado' }, 404)
@@ -292,31 +324,22 @@ driversRoutes.put('/:id', adminOnly, zValidator('json', editDriverSchema), async
     cities: driverData.cities ? JSON.stringify(driverData.cities) : null,
   }).where(eq(drivers.id, id))
 
-  if (vehicleData) {
-    const existingVehicle = await db.select().from(vehicles).where(eq(vehicles.driverId, id)).get()
-    if (existingVehicle) {
-      if (vehicleData.plate.toUpperCase() !== existingVehicle.plate) {
-        const plateTaken = await db.select().from(vehicles).where(eq(vehicles.plate, vehicleData.plate.toUpperCase())).get()
-        if (plateTaken) return c.json({ error: 'Esta placa já está cadastrada' }, 409)
-      }
-      await db.update(vehicles).set({
-        type: vehicleData.type as "sedan" | "suv" | "hatch" | "van" | "caminhonete" | "caminhao",
-        model: vehicleData.model,
-        plate: vehicleData.plate.toUpperCase(),
-        year: vehicleData.year || null,
-        color: vehicleData.color || null,
-      }).where(eq(vehicles.id, existingVehicle.id))
-    } else {
-      const plateTaken = await db.select().from(vehicles).where(eq(vehicles.plate, vehicleData.plate.toUpperCase())).get()
-      if (plateTaken) return c.json({ error: 'Esta placa já está cadastrada' }, 409)
+  // Update vehicles: delete all old ones and reinsert the new list
+  if (vehiclesData && vehiclesData.length > 0) {
+    await db.delete(vehicles).where(eq(vehicles.driverId, id))
+    for (const vData of vehiclesData) {
+      const plate = vData.plate.toUpperCase()
+      // Check if plate is used by another driver
+      const plateTaken = await db.select().from(vehicles).where(eq(vehicles.plate, plate)).get()
+      if (plateTaken && plateTaken.driverId !== id) return c.json({ error: `A placa ${plate} já está cadastrada por outro motorista` }, 409)
       await db.insert(vehicles).values({
         id: crypto.randomUUID(),
         driverId: id,
-        type: vehicleData.type as "sedan" | "suv" | "hatch" | "van" | "caminhonete" | "caminhao",
-        model: vehicleData.model,
-        plate: vehicleData.plate.toUpperCase(),
-        year: vehicleData.year || null,
-        color: vehicleData.color || null,
+        type: vData.type as 'sedan' | 'suv' | 'hatch' | 'van' | 'caminhonete' | 'caminhao',
+        model: vData.model,
+        plate,
+        year: vData.year || null,
+        color: vData.color || null,
       })
     }
   }
@@ -324,7 +347,7 @@ driversRoutes.put('/:id', adminOnly, zValidator('json', editDriverSchema), async
   return c.json({ success: true })
 })
 
-// PATCH /api/drivers/:id/status
+// PATCH /api/drivers/:id/status (admin only - para aprovar/suspender)
 driversRoutes.patch('/:id/status', adminOnly, async (c) => {
   const db = getDb(c.env.DB)
   const id = c.req.param('id') as string
@@ -338,6 +361,112 @@ driversRoutes.patch('/:id/status', adminOnly, async (c) => {
 
   await db.update(drivers).set({ status, updatedAt: new Date().toISOString() }).where(eq(drivers.id, id))
   return c.json({ success: true, status })
+})
+
+// PATCH /api/drivers/:id/availability (driver only - para motorista mudar online/offline)
+driversRoutes.patch('/:id/availability', async (c) => {
+  const db = getDb(c.env.DB)
+  const id = c.req.param('id') as string
+  const user = c.get('jwtPayload')
+  const { status } = await c.req.json()
+
+  // Verificar se é o próprio motorista
+  let driver;
+  if (id === 'me') {
+    driver = await db.select().from(drivers).where(eq(drivers.userId, user.sub)).get()
+  } else {
+    driver = await db.select().from(drivers).where(eq(drivers.id, id)).get()
+    if (driver) {
+      const driverUser = await db.select().from(users).where(eq(users.id, driver.userId)).get()
+      if (driverUser?.id !== user.sub) return c.json({ error: 'Acesso negado' }, 403)
+    }
+  }
+
+  if (!driver) return c.json({ error: 'Motorista não encontrado' }, 404)
+
+  // Apenas permitir online/offline
+  const allowed = ['online', 'offline']
+  if (!allowed.includes(status)) return c.json({ error: 'Status inválido para esta operação' }, 400)
+
+  // Não permitir mudar status se estiver pending ou suspended
+  if (driver.status === 'pending') return c.json({ error: 'Sua conta ainda está em análise' }, 403)
+  if (driver.status === 'suspended') return c.json({ error: 'Sua conta está suspensa' }, 403)
+
+  await db.update(drivers).set({ status, updatedAt: new Date().toISOString() }).where(eq(drivers.id, driver.id))
+  return c.json({ success: true, status })
+})
+
+const pushSubscriptionSchema = z.object({
+  endpoint: z.string().url(),
+  keys: z.object({
+    p256dh: z.string(),
+    auth: z.string(),
+  }),
+})
+
+// POST /api/drivers/:id/push-subscription (driver only - registrar push subscription)
+driversRoutes.post('/:id/push-subscription', zValidator('json', pushSubscriptionSchema), async (c) => {
+  const db = getDb(c.env.DB)
+  const id = c.req.param('id') as string
+  const user = c.get('jwtPayload')
+  const { endpoint, keys } = c.req.valid('json')
+
+  // Verificar se é o próprio motorista
+  const driver = await db.select().from(drivers).where(eq(drivers.id, id)).get()
+  if (!driver) return c.json({ error: 'Motorista não encontrado' }, 404)
+
+  const driverUser = await db.select().from(users).where(eq(users.id, driver.userId)).get()
+  if (driverUser?.id !== user.sub) return c.json({ error: 'Acesso negado' }, 403)
+
+  // Verificar se já existe subscription, se sim, atualiza
+  const existing = await db.select().from(pushSubscriptions)
+    .where(eq(pushSubscriptions.endpoint, endpoint))
+    .get()
+
+  if (existing) {
+    await db.update(pushSubscriptions)
+      .set({
+        userId: driverUser.id,
+        driverId: id,
+        p256dhKey: keys.p256dh,
+        authKey: keys.auth,
+        active: true,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(pushSubscriptions.id, existing.id))
+  } else {
+    await db.insert(pushSubscriptions).values({
+      id: crypto.randomUUID(),
+      userId: driverUser.id,
+      driverId: id,
+      endpoint,
+      p256dhKey: keys.p256dh,
+      authKey: keys.auth,
+      active: true,
+    })
+  }
+
+  return c.json({ success: true })
+})
+
+// DELETE /api/drivers/:id/push-subscription (driver only - remover push subscription)
+driversRoutes.delete('/:id/push-subscription', async (c) => {
+  const db = getDb(c.env.DB)
+  const id = c.req.param('id') as string
+  const user = c.get('jwtPayload')
+
+  // Verificar se é o próprio motorista
+  const driver = await db.select().from(drivers).where(eq(drivers.id, id)).get()
+  if (!driver) return c.json({ error: 'Motorista não encontrado' }, 404)
+
+  const driverUser = await db.select().from(users).where(eq(users.id, driver.userId)).get()
+  if (driverUser?.id !== user.sub) return c.json({ error: 'Acesso negado' }, 403)
+
+  await db.update(pushSubscriptions)
+    .set({ active: false, updatedAt: new Date().toISOString() })
+    .where(eq(pushSubscriptions.driverId, id))
+
+  return c.json({ success: true })
 })
 
 // PATCH /api/drivers/admin/:id/status

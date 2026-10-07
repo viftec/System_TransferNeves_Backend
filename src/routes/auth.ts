@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { getDb } from '../db'
-import { users, drivers, vehicles } from '../db/schema'
+import { users, drivers, vehicles as vehiclesTable } from '../db/schema'
 import { hashPassword, verifyPassword } from '../lib/hash'
 import { signToken } from '../lib/jwt'
 import { eq } from 'drizzle-orm'
 import { sendVerificationEmail, sendPasswordResetEmail } from '../lib/brevo'
-import { checkRateLimit } from '../lib/rate-limit'
 import type { Env } from '../middleware/auth'
+import { authMiddleware } from '../middleware/auth'
+import { z } from 'zod'
+import { zValidator } from '@hono/zod-validator'
 
 export const authRoutes = new Hono<{ Bindings: Env }>()
 
@@ -17,15 +19,6 @@ authRoutes.post('/login', async (c) => {
 
     if (!email || !password) {
       return c.json({ error: 'Email e senha são obrigatórios' }, 400)
-    }
-
-    // Rate limiting by email
-    const rateLimit = await checkRateLimit(c.env.DB, email, 'login')
-    if (!rateLimit.allowed) {
-      return c.json({ 
-        error: 'Muitas tentativas de login. Tente novamente mais tarde.',
-        blockedUntil: rateLimit.blockedUntil
-      }, 429)
     }
 
     const db = getDb(c.env.DB)
@@ -261,19 +254,14 @@ authRoutes.get('/check-email', async (c) => {
 // POST /api/auth/register-driver
 authRoutes.post('/register-driver', async (c) => {
   try {
-    const { name, email, phone, password, cpf, cnh, street, city, cities, plate, color, model, type } = await c.req.json()
+    const { name, email, phone, password, cpf, cnh, cnhExpiry, street, number, complement, neighborhood, city, state, cep, cities, vehicles } = await c.req.json()
 
-    if (!name || !email || !phone || !password || !cpf || !cnh || !street || !city || !plate || !color || !model || !type) {
+    if (!name || !email || !phone || !password || !cpf || !cnh || !street || !city) {
       return c.json({ error: 'Todos os campos são obrigatórios' }, 400)
     }
 
-    // Rate limiting by email
-    const rateLimit = await checkRateLimit(c.env.DB, email, 'register')
-    if (!rateLimit.allowed) {
-      return c.json({ 
-        error: 'Muitas tentativas de registro. Tente novamente mais tarde.',
-        blockedUntil: rateLimit.blockedUntil
-      }, 429)
+    if (!vehicles || !Array.isArray(vehicles) || vehicles.length === 0) {
+      return c.json({ error: 'É necessário cadastrar pelo menos 1 veículo' }, 400)
     }
 
     // Validate CPF format
@@ -308,7 +296,7 @@ authRoutes.post('/register-driver', async (c) => {
         // Se existe mas não foi verificado, apagamos os registros antigos para recriar
         const existingDriver = await db.select().from(drivers).where(eq(drivers.userId, existing.id)).get()
         if (existingDriver) {
-          await db.delete(vehicles).where(eq(vehicles.driverId, existingDriver.id))
+          await db.delete(vehiclesTable).where(eq(vehiclesTable.driverId, existingDriver.id))
           await db.delete(drivers).where(eq(drivers.userId, existing.id))
         }
         await db.delete(users).where(eq(users.id, existing.id))
@@ -339,22 +327,34 @@ authRoutes.post('/register-driver', async (c) => {
       id: driverId,
       userId,
       cnh,
+      cnhExpiry: cnhExpiry || null,
       street,
+      number: number || null,
+      complement: complement || null,
+      neighborhood: neighborhood || null,
       city,
+      state,
+      cep: cep || null,
       cities: cities && cities.length > 0 ? JSON.stringify(cities) : null,
       status: 'pending',
       cpf: cleanCPF,
     })
 
-    // Create Vehicle
-    await db.insert(vehicles).values({
-      id: crypto.randomUUID(),
-      driverId,
-      plate,
-      color,
-      model,
-      type: type, // Vehicle type selected by user
-    })
+    // Create Vehicles
+    for (const vData of vehicles) {
+      if (!vData.type || !vData.model || !vData.plate || !vData.color) {
+        return c.json({ error: 'Dados do veículo incompletos' }, 400)
+      }
+      await db.insert(vehiclesTable).values({
+        id: crypto.randomUUID(),
+        driverId,
+        plate: vData.plate.toUpperCase(),
+        color: vData.color,
+        model: vData.model,
+        type: vData.type,
+        year: vData.year ? Number(vData.year) : null,
+      })
+    }
 
     // Enviar E-mail via Brevo
     const frontendUrl = c.env.ENVIRONMENT === 'development'
@@ -368,6 +368,10 @@ authRoutes.post('/register-driver', async (c) => {
     return c.json({ message: 'Cadastro realizado. Verifique seu e-mail para ativar a conta.' }, 201)
   } catch (error: any) {
     console.error('Register Driver Error:', error)
+    const msg: string = error?.message ?? error?.cause?.message ?? ''
+    if (msg.includes('vehicles.plate')) return c.json({ error: 'Esta placa já está cadastrada no sistema.' }, 409)
+    if (msg.includes('drivers.cpf')) return c.json({ error: 'Este CPF já está cadastrado no sistema.' }, 409)
+    if (msg.includes('UNIQUE constraint')) return c.json({ error: 'Dado duplicado. Verifique e-mail, CPF ou placa.' }, 409)
     return c.json({ error: 'Erro ao realizar cadastro do motorista' }, 500)
   }
 })
@@ -403,7 +407,7 @@ authRoutes.get('/verify', async (c) => {
       // Clean up expired unverified user
       const existingDriver = await db.select().from(drivers).where(eq(drivers.userId, user.id)).get()
       if (existingDriver) {
-        await db.delete(vehicles).where(eq(vehicles.driverId, existingDriver.id))
+        await db.delete(vehiclesTable).where(eq(vehiclesTable.driverId, existingDriver.id))
         await db.delete(drivers).where(eq(drivers.userId, user.id))
       }
       await db.delete(users).where(eq(users.id, user.id))
@@ -422,3 +426,67 @@ authRoutes.get('/verify', async (c) => {
     return c.json({ error: 'Erro ao verificar e-mail' }, 500)
   }
 })
+
+const pushSubscriptionSchema = z.object({
+  endpoint: z.string().url(),
+  keys: z.object({
+    p256dh: z.string(),
+    auth: z.string(),
+  }),
+})
+
+// POST /api/auth/push-subscription (Registrar push genérico para admin/usuário)
+authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSubscriptionSchema), async (c) => {
+  const db = getDb(c.env.DB)
+  const user = c.get('jwtPayload')
+  const { endpoint, keys } = c.req.valid('json')
+
+  // Verificar se já existe subscription
+  const existing = await db.select().from(pushSubscriptions)
+    .where(eq(pushSubscriptions.endpoint, endpoint))
+    .get()
+
+  if (existing) {
+    await db.update(pushSubscriptions)
+      .set({
+        userId: user.sub,
+        p256dhKey: keys.p256dh,
+        authKey: keys.auth,
+        active: true,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(pushSubscriptions.id, existing.id))
+  } else {
+    // Se for motorista, tenta achar o driverId
+    let driverId = null
+    if (user.role === 'driver') {
+      const driver = await db.select().from(drivers).where(eq(drivers.userId, user.sub)).get()
+      if (driver) driverId = driver.id
+    }
+
+    await db.insert(pushSubscriptions).values({
+      id: crypto.randomUUID(),
+      userId: user.sub,
+      driverId,
+      endpoint,
+      p256dhKey: keys.p256dh,
+      authKey: keys.auth,
+      active: true,
+    })
+  }
+
+  return c.json({ success: true })
+})
+
+// DELETE /api/auth/push-subscription
+authRoutes.delete('/push-subscription', authMiddleware, async (c) => {
+  const db = getDb(c.env.DB)
+  const user = c.get('jwtPayload')
+
+  await db.update(pushSubscriptions)
+    .set({ active: false, updatedAt: new Date().toISOString() })
+    .where(eq(pushSubscriptions.userId, user.sub))
+
+  return c.json({ success: true })
+})
+
