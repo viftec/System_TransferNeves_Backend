@@ -377,7 +377,7 @@ ridesRoutes.post('/:id/cancel-driver', async (c) => {
           code: ride.code || '',
           originCity: ride.originCity,
           destCity: ride.destCity,
-          scheduledAt: ride.scheduledAt || `${ride.scheduledDate}T${ride.scheduledTime}:00`,
+          scheduledAt: ride.scheduledAt || `${ride.scheduledDate}T${ride.scheduledTime}:00-03:00`,
           value: ride.value,
           type: ride.type,
           serviceCities: (() => { try { return ride.serviceCities ? JSON.parse(ride.serviceCities) : undefined } catch { return undefined } })(),
