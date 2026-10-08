@@ -171,7 +171,7 @@ authRoutes.get('/reset-password', async (c) => {
       return c.json({ error: 'Link expirado ou já utilizado.' }, 400)
     }
 
-    const createdAt = new Date(user.resetTokenCreatedAt.replace(' ', 'T') + 'Z')
+    const createdAt = new Date(user.resetTokenCreatedAt.replace(' ', 'T') + '-03:00')
     const now = new Date()
     const diffHours = (now.getTime() - createdAt.getTime()) / (1000 * 3600)
 
@@ -211,7 +211,7 @@ authRoutes.post('/reset-password', async (c) => {
       return c.json({ error: 'Link expirado ou já utilizado.' }, 400)
     }
 
-    const createdAt = new Date(user.resetTokenCreatedAt.replace(' ', 'T') + 'Z')
+    const createdAt = new Date(user.resetTokenCreatedAt.replace(' ', 'T') + '-03:00')
     const now = new Date()
     const diffHours = (now.getTime() - createdAt.getTime()) / (1000 * 3600)
 
@@ -399,7 +399,7 @@ authRoutes.get('/verify', async (c) => {
     }
 
     // Check expiration (5 days)
-    const createdAt = new Date(user.createdAt.replace(' ', 'T') + 'Z')
+    const createdAt = new Date(user.createdAt.replace(' ', 'T') + '-03:00')
     const now = new Date()
     const diffDays = (now.getTime() - createdAt.getTime()) / (1000 * 3600 * 24)
     
