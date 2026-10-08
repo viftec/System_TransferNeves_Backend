@@ -1,0 +1,1 @@
+ALTER TABLE `rides` ADD `service_cities` text;

@@ -114,6 +114,7 @@ export const rides = sqliteTable('rides', {
   cargoHeight:      real('cargo_height'),
   cargoFragile:     integer('cargo_fragile', { mode: 'boolean' }).notNull().default(false),
   allowedVehicleTypes: text('allowed_vehicle_types'), // Array de tipos: ["sedan","suv"] em JSON
+  serviceCities:    text('service_cities'), // Array of cities that can attend the ride, e.g. ["Sorocaba", "Itu"]
   // Origem
   originStreet:     text('origin_street'),
   originNumber:     text('origin_number'),
@@ -146,6 +147,9 @@ export const rides = sqliteTable('rides', {
   allowCancellation: integer('allow_cancellation', { mode: 'boolean' }).notNull().default(true),
   showValueToDriver: integer('show_value_to_driver', { mode: 'boolean' }).notNull().default(true),
   proofKey:         text('proof_key'),  // comprovante no R2
+  completedAt:      text('completed_at'),
+  proofExpiresAt:   text('proof_expires_at'),
+  proofExpired:     integer('proof_expired', { mode: 'boolean' }).notNull().default(false),
   createdAt:        text('created_at').notNull().default(sql`(datetime('now'))`),
   updatedAt:        text('updated_at').notNull().default(sql`(datetime('now'))`),
   deletedAt:        text('deleted_at'),

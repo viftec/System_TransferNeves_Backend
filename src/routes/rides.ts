@@ -2,12 +2,28 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { getDb } from '../db'
-import { rides, rideEvents, clients, drivers, vehicles, users } from '../db/schema'
+import { rides, rideEvents, clients, drivers, vehicles, users, uploads } from '../db/schema'
 import { eq, desc, asc, and, like, isNull, or, sql } from 'drizzle-orm'
 import { authMiddleware, adminOnly, type Env } from '../middleware/auth'
 import { notifyEligibleDrivers, notifyAdmins } from '../lib/push'
+import {
+  proofExpiresAtFromCompletion,
+  isProofDownloadAllowed,
+  buildProofDownloadFilename,
+} from '../lib/proof-retention'
 
 export const ridesRoutes = new Hono<{ Bindings: Env }>()
+
+function completionProofFields(ride: { proofKey?: string | null }, completedAtIso: string) {
+  const base: Record<string, unknown> = {
+    completedAt: completedAtIso,
+  }
+  if (ride.proofKey) {
+    base.proofExpiresAt = proofExpiresAtFromCompletion(new Date(completedAtIso))
+    base.proofExpired = false
+  }
+  return base
+}
 
 // Todas as rotas de corridas exigem auth
 ridesRoutes.use('/*', authMiddleware)
@@ -18,9 +34,47 @@ ridesRoutes.get('/', async (c) => {
   const user = c.get('jwtPayload')
   const status = c.req.query('status')
   const page = Number(c.req.query('page') ?? '1')
-  const limit = Number(c.req.query('limit') ?? '50')
+  const requestedLimit = Number(c.req.query('limit') ?? '50')
+  const yearQ = c.req.query('year')
+  const monthQ = c.req.query('month')
+  const monthFilterActive =
+    user.role === 'admin' &&
+    yearQ != null &&
+    monthQ != null &&
+    yearQ !== '' &&
+    monthQ !== ''
+
+  let limit: number
+  if (user.role === 'admin') {
+    if (monthFilterActive) {
+      // Dashboard: só o mês selecionado; teto de proteção (não paginar histórico inteiro)
+      limit = Math.min(500, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 500))
+    } else {
+      limit = Math.min(100, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 50))
+    }
+  } else {
+    limit = Math.min(200, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 50))
+  }
 
   let filters = [isNull(rides.deletedAt)]
+
+  if (monthFilterActive) {
+    const y = parseInt(String(yearQ), 10)
+    const m = parseInt(String(monthQ), 10)
+    if (Number.isFinite(y) && Number.isFinite(m) && m >= 1 && m <= 12) {
+      const mm = String(m).padStart(2, '0')
+      const start = `${y}-${mm}-01`
+      const nextM = m === 12 ? 1 : m + 1
+      const nextY = m === 12 ? y + 1 : y
+      const end = `${nextY}-${String(nextM).padStart(2, '0')}-01`
+      filters.push(
+        sql`(
+          (scheduled_date >= ${start} AND scheduled_date < ${end})
+          OR (scheduled_at IS NOT NULL AND scheduled_at >= ${start} AND scheduled_at < ${end})
+        )`,
+      )
+    }
+  }
   
   if (user.role === 'driver') {
     const driver = await db.select().from(drivers).where(eq(drivers.userId, user.sub)).get()
@@ -37,12 +91,15 @@ ridesRoutes.get('/', async (c) => {
             .orderBy(desc(rides.createdAt))
             .all()
 
-          // Get available rides in driver's cities
+          // Get available rides in driver's cities (fallback to originCity if serviceCities is null)
           const availableRides = await db.select().from(rides)
             .where(and(
               isNull(rides.deletedAt),
               eq(rides.status, 'disponivel'),
-              sql`${rides.originCity} IN ${sql.raw(`(${driverCities.map(c => `'${c}'`).join(',')})`)}`
+              sql`(
+                (service_cities IS NOT NULL AND (${sql.raw(driverCities.map(c => `service_cities LIKE '%"${c}"%'`).join(' OR '))}))
+                OR (service_cities IS NULL AND origin_city IN ${sql.raw(`(${driverCities.map(c => `'${c}'`).join(',')})`)})
+              )`
             ))
             .orderBy(desc(rides.createdAt))
             .all()
@@ -130,7 +187,7 @@ ridesRoutes.get('/', async (c) => {
 
   const result = await db.select().from(rides)
     .where(and(...filters))
-    .orderBy(desc(rides.createdAt))
+    .orderBy(desc(rides.scheduledDate), desc(rides.scheduledTime), desc(rides.createdAt))
     .limit(limit)
     .offset((page - 1) * limit)
     .all()
@@ -177,6 +234,60 @@ ridesRoutes.get('/', async (c) => {
   )
 
   return c.json({ rides: ridesWithDetails, page, limit })
+})
+
+// GET /api/rides/:id/proof/download — baixa comprovante (admin ou motorista da corrida)
+ridesRoutes.get('/:id/proof/download', async (c) => {
+  const db = getDb(c.env.DB)
+  const id = c.req.param('id') as string
+  const user = c.get('jwtPayload')
+
+  const ride = await db.select().from(rides).where(eq(rides.id, id)).get()
+  if (!ride || ride.deletedAt) return c.json({ error: 'Corrida não encontrada' }, 404)
+
+  if (user.role === 'driver') {
+    const driver = await db.select().from(drivers).where(eq(drivers.userId, user.sub)).get()
+    if (!driver || ride.driverId !== driver.id) {
+      return c.json({ error: 'Acesso negado' }, 403)
+    }
+  } else if (user.role !== 'admin') {
+    return c.json({ error: 'Acesso negado' }, 403)
+  }
+
+  if (!isProofDownloadAllowed(ride.proofKey, ride.proofExpired, ride.proofExpiresAt)) {
+    return c.json(
+      {
+        error: ride.proofExpired || !ride.proofKey
+          ? 'Comprovante expirado ou removido. O arquivo fica disponível por 30 dias após a conclusão.'
+          : 'Comprovante indisponível para download.',
+        proofExpired: true,
+      },
+      410,
+    )
+  }
+
+  const obj = await c.env.FILES.get(ride.proofKey!)
+  if (!obj) {
+    await db.update(rides).set({ proofKey: null, proofExpired: true, updatedAt: new Date().toISOString() }).where(eq(rides.id, id))
+    return c.json({ error: 'Arquivo não encontrado no armazenamento' }, 404)
+  }
+
+  let driverName = 'motorista'
+  if (ride.driverId) {
+    const d = await db.select().from(drivers).where(eq(drivers.id, ride.driverId)).get()
+    if (d) {
+      const u = await db.select().from(users).where(eq(users.id, d.userId)).get()
+      if (u?.name) driverName = u.name
+    }
+  }
+
+  const filename = buildProofDownloadFilename(ride.code, driverName, ride.proofKey!)
+  const headers = new Headers()
+  obj.writeHttpMetadata(headers)
+  headers.set('Content-Disposition', `attachment; filename="${filename}"`)
+  headers.set('Cache-Control', 'private, no-store')
+
+  return new Response(obj.body, { headers })
 })
 
 // GET /api/rides/:id
@@ -269,6 +380,7 @@ ridesRoutes.post('/:id/cancel-driver', async (c) => {
           scheduledAt: ride.scheduledAt || `${ride.scheduledDate}T${ride.scheduledTime}:00`,
           value: ride.value,
           type: ride.type,
+          serviceCities: (() => { try { return ride.serviceCities ? JSON.parse(ride.serviceCities) : undefined } catch { return undefined } })(),
         },
         null, // sem filtro de veículo
         c.env
@@ -312,6 +424,8 @@ const createRideSchema = z.object({
   cargoFragile: z.boolean().optional(),
   
   allowedVehicleTypes: z.array(z.enum(['sedan', 'suv', 'hatch', 'van', 'caminhonete', 'caminhao'])).min(1, 'Selecione pelo menos um tipo de veículo').optional(),
+  
+  serviceCities: z.array(z.string()).optional(),
   
   requiresPhoto: z.boolean().optional(),
 })
@@ -396,6 +510,8 @@ ridesRoutes.post('/', adminOnly, zValidator('json', createRideSchema), async (c)
       // Tipos de veículo permitidos
       allowedVehicleTypes: body.allowedVehicleTypes ? JSON.stringify(body.allowedVehicleTypes) : null,
       
+      serviceCities: body.serviceCities && body.serviceCities.length > 0 ? JSON.stringify(body.serviceCities) : null,
+      
       // Configurações da corrida
       requiresPhoto: body.requiresPhoto ?? false,
     }).returning().get()
@@ -427,6 +543,7 @@ ridesRoutes.post('/', adminOnly, zValidator('json', createRideSchema), async (c)
     // Notificar motoristas elegíveis — não-crítico
     try {
       const allowedVehicleTypes = body.allowedVehicleTypes || null
+      const parsedServiceCities = body.serviceCities && body.serviceCities.length > 0 ? body.serviceCities : undefined
       await notifyEligibleDrivers(db, {
         rideId: ride.id,
         code: ride.code,
@@ -435,6 +552,7 @@ ridesRoutes.post('/', adminOnly, zValidator('json', createRideSchema), async (c)
         scheduledAt: ride.scheduledAt || scheduledAt.toISOString(),
         value: ride.value,
         type: ride.type,
+        serviceCities: parsedServiceCities,
       }, allowedVehicleTypes, c.env)
     } catch (pushErr) {
       console.error('[rides] Falha ao notificar motoristas (não-crítico):', pushErr)
@@ -470,7 +588,12 @@ ridesRoutes.patch('/:id/status', adminOnly, zValidator('json', z.object({
     sem_motoristas: 'Corrida expirada sem motoristas',
   }
 
-  await db.update(rides).set({ status, updatedAt: new Date().toISOString() }).where(eq(rides.id, id))
+  const nowIso = new Date().toISOString()
+  const statusUpdate: Record<string, unknown> = { status, updatedAt: nowIso }
+  if (status === 'concluida') {
+    Object.assign(statusUpdate, completionProofFields(existing, nowIso))
+  }
+  await db.update(rides).set(statusUpdate as typeof rides.$inferInsert).where(eq(rides.id, id))
 
   // Registra evento — não-crítico: FK failure no log não deve bloquear a operação principal
   try {
@@ -684,7 +807,12 @@ ridesRoutes.patch('/:id/driver-status', zValidator('json', z.object({
     return c.json({ error: 'Esta corrida exige comprovante de entrega. Por favor, envie o comprovante antes de concluir.' }, 400)
   }
 
-  await db.update(rides).set({ status, updatedAt: new Date().toISOString() }).where(eq(rides.id, id))
+  const nowIso = new Date().toISOString()
+  const driverStatusUpdate: Record<string, unknown> = { status, updatedAt: nowIso }
+  if (status === 'concluida') {
+    Object.assign(driverStatusUpdate, completionProofFields(ride, nowIso))
+  }
+  await db.update(rides).set(driverStatusUpdate as typeof rides.$inferInsert).where(eq(rides.id, id))
 
   // Registrar evento
   try {
@@ -752,8 +880,9 @@ ridesRoutes.post('/:id/proof', async (c) => {
     return c.json({ error: 'Arquivo muito grande. Máximo permitido: 10MB' }, 400)
   }
 
-  const ext = file.name.split('.').pop() ?? 'bin'
-  const r2Key = `ride_proof/${id}/${crypto.randomUUID()}.${ext}`
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? 'bin'
+  const safeExt = ['jpg', 'jpeg', 'png', 'webp', 'pdf'].includes(ext) ? ext : 'bin'
+  const r2Key = `ride_proof/${id}/${crypto.randomUUID()}.${safeExt}`
 
   // Upload para R2
   await c.env.FILES.put(r2Key, file.stream(), {
@@ -762,6 +891,20 @@ ridesRoutes.post('/:id/proof', async (c) => {
 
   // Atualizar a corrida com a chave do comprovante
   await db.update(rides).set({ proofKey: r2Key, updatedAt: new Date().toISOString() }).where(eq(rides.id, id))
+
+  try {
+    await db.insert(uploads).values({
+      id: crypto.randomUUID(),
+      r2Key,
+      entityType: 'ride_proof',
+      entityId: id,
+      contentType: file.type,
+      sizeBytes: file.size,
+      uploadedBy: user.sub,
+    })
+  } catch (uploadMetaErr) {
+    console.error('[rides] Falha ao registrar metadados do comprovante (não-crítico):', uploadMetaErr)
+  }
 
   // Registrar evento
   try {
@@ -821,7 +964,7 @@ ridesRoutes.post('/check-expired', adminOnly, async (c) => {
 // POST /api/rides/clean-old — limpa corridas antigas (admin only)
 ridesRoutes.post('/clean-old', adminOnly, async (c) => {
   const db = getDb(c.env.DB)
-  const { days = 7 } = await c.req.json()
+  const { days = 30 } = await c.req.json()
 
   // Calcular data limite
   const cutoffDate = new Date()
@@ -995,6 +1138,8 @@ ridesRoutes.put('/:id', adminOnly, zValidator('json', createRideSchema), async (
       
       // Tipos de veículo permitidos
       allowedVehicleTypes: body.allowedVehicleTypes ? JSON.stringify(body.allowedVehicleTypes) : null,
+      
+      serviceCities: body.serviceCities && body.serviceCities.length > 0 ? JSON.stringify(body.serviceCities) : null,
       
       // Configurações da corrida
       requiresPhoto: body.requiresPhoto ?? false,

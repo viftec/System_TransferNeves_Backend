@@ -46,7 +46,7 @@ export async function notifyEligibleDrivers(
   db: DB,
   rideData: {
     rideId: string; code: string; originCity: string; destCity: string
-    scheduledAt: string; value: number; type: string
+    scheduledAt: string; value: number; type: string; serviceCities?: string[]
   },
   allowedVehicleTypes: string[] | null,
   env: { VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }
@@ -72,7 +72,11 @@ export async function notifyEligibleDrivers(
       if (!driver.cities) return false
       try {
         const cities = JSON.parse(driver.cities) as string[]
-        if (!cities.includes(rideData.originCity)) return false
+        if (rideData.serviceCities && rideData.serviceCities.length > 0) {
+          if (!rideData.serviceCities.some(c => cities.includes(c))) return false
+        } else {
+          if (!cities.includes(rideData.originCity)) return false
+        }
       } catch { return false }
       if (allowedVehicleTypes?.length) {
         const driverTypes = vehiclesByDriver[driver.id] ?? []

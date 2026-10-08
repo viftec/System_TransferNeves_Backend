@@ -64,6 +64,13 @@
       "when": 1791289493242,
       "tag": "0008_complex_william_stryker",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791458439469,
+      "tag": "0009_far_mauler",
+      "breakpoints": true
     }
   ]
 }

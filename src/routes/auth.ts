@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { getDb } from '../db'
-import { users, drivers, vehicles as vehiclesTable } from '../db/schema'
+import { users, drivers, vehicles as vehiclesTable, pushSubscriptions } from '../db/schema'
 import { hashPassword, verifyPassword } from '../lib/hash'
 import { signToken } from '../lib/jwt'
 import { eq } from 'drizzle-orm'

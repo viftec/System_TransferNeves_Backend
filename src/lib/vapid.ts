@@ -16,11 +16,13 @@
  *   VAPID_SUBJECT=mailto:admin@transferneves.com.br
  */
 
-function base64UrlDecode(base64url: string): Uint8Array {
+function base64UrlDecode(base64url: string): Uint8Array<ArrayBuffer> {
   const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/')
   const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=')
   const binary = atob(padded)
-  return Uint8Array.from(binary, (c) => c.charCodeAt(0))
+  const arr = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i)
+  return arr as Uint8Array<ArrayBuffer>
 }
 
 function base64UrlEncode(buffer: ArrayBuffer | Uint8Array): string {
@@ -30,9 +32,9 @@ function base64UrlEncode(buffer: ArrayBuffer | Uint8Array): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
 }
 
-function concat(...arrays: Uint8Array[]): Uint8Array {
+function concat(...arrays: Uint8Array[]): Uint8Array<ArrayBuffer> {
   const totalLength = arrays.reduce((sum, a) => sum + a.length, 0)
-  const result = new Uint8Array(totalLength)
+  const result = new Uint8Array(totalLength) as Uint8Array<ArrayBuffer>
   let offset = 0
   for (const arr of arrays) { result.set(arr, offset); offset += arr.length }
   return result
@@ -45,7 +47,7 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
   const signingInput = `${header}.${claims}`
   const rawKey = base64UrlDecode(privateKeyBase64)
   const privateKey = await crypto.subtle.importKey(
-    'pkcs8', rawKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
+    'pkcs8', rawKey.buffer as ArrayBuffer, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
   )
   const signature = await crypto.subtle.sign(
     { name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(signingInput)
@@ -55,14 +57,15 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
 
 async function encryptPushPayload(
   p256dh: string, auth: string, plaintext: string
-): Promise<{ body: Uint8Array; serverPublicKey: Uint8Array; salt: Uint8Array }> {
-  const salt = crypto.getRandomValues(new Uint8Array(16))
+): Promise<{ body: Uint8Array<ArrayBuffer>; serverPublicKey: Uint8Array<ArrayBuffer>; salt: Uint8Array<ArrayBuffer> }> {
+  const salt = crypto.getRandomValues(new Uint8Array(16)) as Uint8Array<ArrayBuffer>
 
   const serverKP = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
-  const serverPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', serverKP.publicKey))
+  const serverPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', serverKP.publicKey)) as Uint8Array<ArrayBuffer>
 
+  const clientPubRaw = base64UrlDecode(p256dh)
   const clientPubKey = await crypto.subtle.importKey(
-    'raw', base64UrlDecode(p256dh), { name: 'ECDH', namedCurve: 'P-256' }, false, []
+    'raw', clientPubRaw.buffer as ArrayBuffer, { name: 'ECDH', namedCurve: 'P-256' }, false, []
   )
 
   const sharedBits = await crypto.subtle.deriveBits({ name: 'ECDH', public: clientPubKey }, serverKP.privateKey, 256)
@@ -70,29 +73,28 @@ async function encryptPushPayload(
 
   // PRK via HKDF(auth, sharedSecret, info)
   const prkImport = await crypto.subtle.importKey('raw', sharedBits, { name: 'HKDF' }, false, ['deriveBits'])
-  const clientPubRaw = base64UrlDecode(p256dh)
-  const prkInfo = concat(new TextEncoder().encode('WebPush: info\x00'), clientPubRaw, serverPubRaw)
-  const ikm = new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: authSecret, info: prkInfo }, prkImport, 256))
+  const prkInfo = concat(new TextEncoder().encode('WebPush: info\x00') as Uint8Array<ArrayBuffer>, clientPubRaw, serverPubRaw)
+  const ikm = new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: authSecret.buffer as ArrayBuffer, info: prkInfo.buffer as ArrayBuffer }, prkImport, 256)) as Uint8Array<ArrayBuffer>
 
-  const ikmKey = await crypto.subtle.importKey('raw', ikm, { name: 'HKDF' }, false, ['deriveBits'])
+  const ikmKey = await crypto.subtle.importKey('raw', ikm.buffer as ArrayBuffer, { name: 'HKDF' }, false, ['deriveBits'])
   const cek = new Uint8Array(await crypto.subtle.deriveBits(
-    { name: 'HKDF', hash: 'SHA-256', salt, info: new TextEncoder().encode('Content-Encoding: aes128gcm\x00') },
+    { name: 'HKDF', hash: 'SHA-256', salt: salt.buffer as ArrayBuffer, info: new TextEncoder().encode('Content-Encoding: aes128gcm\x00').buffer as ArrayBuffer },
     ikmKey, 128
-  ))
+  )) as Uint8Array<ArrayBuffer>
   const nonce = new Uint8Array(await crypto.subtle.deriveBits(
-    { name: 'HKDF', hash: 'SHA-256', salt, info: new TextEncoder().encode('Content-Encoding: nonce\x00') },
+    { name: 'HKDF', hash: 'SHA-256', salt: salt.buffer as ArrayBuffer, info: new TextEncoder().encode('Content-Encoding: nonce\x00').buffer as ArrayBuffer },
     ikmKey, 96
-  ))
+  )) as Uint8Array<ArrayBuffer>
 
-  const aesKey = await crypto.subtle.importKey('raw', cek, { name: 'AES-GCM' }, false, ['encrypt'])
-  const textBytes = new TextEncoder().encode(plaintext)
-  const record = concat(textBytes, new Uint8Array([0x02])) // padding delimiter
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, aesKey, record))
+  const aesKey = await crypto.subtle.importKey('raw', cek.buffer as ArrayBuffer, { name: 'AES-GCM' }, false, ['encrypt'])
+  const textBytes = new TextEncoder().encode(plaintext) as Uint8Array<ArrayBuffer>
+  const record = concat(textBytes, new Uint8Array([0x02]) as Uint8Array<ArrayBuffer>) // padding delimiter
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce.buffer as ArrayBuffer }, aesKey, record.buffer as ArrayBuffer)) as Uint8Array<ArrayBuffer>
 
   // RFC 8188 header: salt(16) + recordSize(4) + keyIdLen(1) + keyId(65) + ciphertext
-  const recordSizeBytes = new Uint8Array(4)
+  const recordSizeBytes = new Uint8Array(4) as Uint8Array<ArrayBuffer>
   new DataView(recordSizeBytes.buffer).setUint32(0, 4096, false)
-  const body = concat(salt, recordSizeBytes, new Uint8Array([serverPubRaw.length]), serverPubRaw, ciphertext)
+  const body = concat(salt, recordSizeBytes, new Uint8Array([serverPubRaw.length]) as Uint8Array<ArrayBuffer>, serverPubRaw, ciphertext)
 
   return { body, serverPublicKey: serverPubRaw, salt }
 }
@@ -141,7 +143,7 @@ export async function sendWebPush(
         'TTL': '86400',
         'Urgency': 'high',
       },
-      body,
+      body: body.buffer as ArrayBuffer,
     })
 
     if (!res.ok) {

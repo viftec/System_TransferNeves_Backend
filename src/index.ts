@@ -8,18 +8,33 @@ import { clientsRoutes } from './routes/clients'
 import { uploadsRoutes } from './routes/uploads'
 import { getDb } from './db'
 import { rides, rideEvents, clients, drivers, users } from './db/schema'
-import { eq, and, sql, isNull } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { notifyAdmins, notifyDriver } from './lib/push'
+import { markExpiredProofs, hardDeleteExpiredProofs } from './lib/proof-purge'
 
 const app = new Hono<{ Bindings: Env }>()
 
-// CORS — permite frontend local e Cloudflare Pages
+// CORS — permite frontend local, Cloudflare Pages (preview) e Produção
 app.use('/*', cors({
-  origin: [
-    'http://localhost:3000',
-    'http://10.0.70.125:3000',
-    'https://transferneves.pages.dev',
-  ],
+  origin: (origin) => {
+    if (!origin) return 'https://transferneves.viftec.com';
+    
+    // Lista de origens fixas permitidas
+    const allowedFixed = [
+      'http://localhost:3000',
+      'http://10.0.70.125:3000',
+      'https://transferneves.pages.dev',
+      'https://transferneves.viftec.com'
+    ];
+
+    // Permite as origens fixas ou qualquer subdomínio do pages.dev (para previews)
+    if (allowedFixed.includes(origin) || origin.endsWith('.pages.dev')) {
+      return origin;
+    }
+    
+    // Fallback para produção
+    return 'https://transferneves.viftec.com';
+  },
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
 }))
@@ -60,7 +75,7 @@ async function runScheduled(env: Env) {
   const db = getDb(env.DB)
   const now = new Date()
   const nowIso = now.toISOString()
-  const stats = { expired: 0, cancelled: 0, deleted: 0, alarm5min: 0, lateAlerts: 0, autoCancel1h: 0 }
+  const stats = { expired: 0, cancelled: 0, alarm5min: 0, lateAlerts: 0, autoCancel1h: 0, proofExpired: 0, proofDeleted: 0 }
 
   try {
     // ── 1. Expirar corridas disponíveis sem motorista (além de 5 min do horário) ──
@@ -210,18 +225,11 @@ async function runScheduled(env: Env) {
       stats.cancelled++
     }
 
-    // ── 6. Soft delete corridas com mais de 7 dias ────────────────────────────────
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 3600000).toISOString()
-    const veryOld = await db.select().from(rides)
-      .where(and(sql`${rides.scheduledAt} < ${sevenDaysAgo}`, isNull(rides.deletedAt)))
-      .all()
+    // ── 6. Comprovantes: expira download (30d) e remove do R2 no 31º dia ────────
+    stats.proofExpired = await markExpiredProofs(db, nowIso)
+    stats.proofDeleted = await hardDeleteExpiredProofs(env, db, now)
 
-    for (const ride of veryOld) {
-      await db.update(rides).set({ deletedAt: nowIso, updatedAt: nowIso }).where(eq(rides.id, ride.id))
-      stats.deleted++
-    }
-
-    console.log(`[cron] expired=${stats.expired} cancelled=${stats.cancelled} deleted=${stats.deleted} alarm5=${stats.alarm5min} late=${stats.lateAlerts} autoCancel1h=${stats.autoCancel1h}`)
+    console.log(`[cron] expired=${stats.expired} cancelled=${stats.cancelled} alarm5=${stats.alarm5min} late=${stats.lateAlerts} autoCancel1h=${stats.autoCancel1h} proofExpired=${stats.proofExpired} proofDeleted=${stats.proofDeleted}`)
     return { success: true, ...stats }
   } catch (error: any) {
     console.error('[cron] Erro:', error)
