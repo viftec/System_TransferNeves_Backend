@@ -453,8 +453,8 @@ ridesRoutes.post('/', adminOnly, zValidator('json', createRideSchema), async (c)
     let isRecurring = !!body.clientId;
 
     // Validar que a corrida não está no passado
-    // Converter formato brasileiro "YYYY-MM-DD HH:mm" para ISO
-    const scheduledAt = new Date(`${body.date}T${body.time}`)
+    // Converter formato brasileiro "YYYY-MM-DD HH:mm" para ISO com timezone America/Sao_Paulo (UTC-3)
+    const scheduledAt = new Date(`${body.date}T${body.time}-03:00`)
     const now = new Date()
 
     if (scheduledAt < now) {
@@ -1084,8 +1084,8 @@ ridesRoutes.put('/:id', adminOnly, zValidator('json', createRideSchema), async (
     let isRecurring = !!body.clientId;
 
     // Validar que a corrida não está no passado
-    // Converter formato brasileiro "YYYY-MM-DD HH:mm" para ISO
-    const scheduledAt = new Date(`${body.date}T${body.time}`)
+    // Converter formato brasileiro "YYYY-MM-DD HH:mm" para ISO com timezone America/Sao_Paulo (UTC-3)
+    const scheduledAt = new Date(`${body.date}T${body.time}-03:00`)
     const now = new Date()
 
     if (scheduledAt < now) {
