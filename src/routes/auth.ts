@@ -146,7 +146,7 @@ authRoutes.post('/forgot-password', async (c) => {
 
     const frontendUrl = c.env.ENVIRONMENT === 'development'
       ? 'http://localhost:3000'
-      : 'https://transferneves.pages.dev'
+      : 'https://transferneves.viftec.com'
 
     const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`
     await sendPasswordResetEmail(apiKey, user.email, user.name, resetUrl)
@@ -359,7 +359,7 @@ authRoutes.post('/register-driver', async (c) => {
     // Enviar E-mail via Brevo
     const frontendUrl = c.env.ENVIRONMENT === 'development'
       ? 'http://localhost:3000'
-      : 'https://transferneves.pages.dev'
+      : 'https://transferneves.viftec.com'
       
     const verificationUrl = `${frontendUrl}/verify?token=${verificationToken}`
 

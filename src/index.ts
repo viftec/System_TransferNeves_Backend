@@ -23,12 +23,11 @@ app.use('/*', cors({
     const allowedFixed = [
       'http://localhost:3000',
       'http://10.0.70.125:3000',
-      'https://transferneves.pages.dev',
       'https://transferneves.viftec.com'
     ];
 
-    // Permite as origens fixas ou qualquer subdomínio do pages.dev (para previews)
-    if (allowedFixed.includes(origin) || origin.endsWith('.pages.dev')) {
+    // Permite as origens fixas
+    if (allowedFixed.includes(origin)) {
       return origin;
     }
     
