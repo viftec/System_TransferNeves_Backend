@@ -92,49 +92,50 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
 
   // Verificar se parece estar em formato PEM (começa com -----BEGIN)
   if (cleanedKey.includes('-----BEGIN')) {
-    throw new Error(`VAPID_PRIVATE_KEY está em formato PEM, mas o código espera Base64URL escalar. Remova o cabeçalho/rodapé PEM e use apenas o conteúdo Base64.`)
+    throw new Error(`VAPID_PRIVATE_KEY está em formato PEM. O código espera Base64URL (sem cabeçalho/rodapé PEM).`)
   }
 
-  // Verificar comprimento esperado para escalar P-256 em Base64URL (43 caracteres)
-  if (cleanedKey.length !== 43) {
-    throw new Error(`VAPID_PRIVATE_KEY tem comprimento inválido: ${cleanedKey.length} caracteres (esperado 43 caracteres para escalar P-256 em Base64URL)`)
+  // Aceitar tanto escalar (43 chars) quanto PKCS#8 (65 chars para P-256)
+  if (cleanedKey.length !== 43 && cleanedKey.length !== 65) {
+    throw new Error(`VAPID_PRIVATE_KEY tem comprimento inválido: ${cleanedKey.length} caracteres (esperado 43 para escalar ou 65 para PKCS#8 em Base64URL)`)
   }
 
   const rawKey = base64UrlDecode(cleanedKey, 'VAPID_PRIVATE_KEY')
 
-  // Validar comprimento da chave privada (32 bytes para escalar P-256)
-  if (rawKey.length !== 32) {
-    throw new Error(`VAPID_PRIVATE_KEY decodificada tem comprimento inválido: ${rawKey.length} bytes (esperado 32 bytes para escalar P-256)`)
+  // Se for 32 bytes, é escalar bruto - precisa converter para PKCS#8
+  // Se for ~119 bytes, já é PKCS#8 - pode importar diretamente
+  if (rawKey.length === 32) {
+    // Converter escalar bruto para PKCS#8 para Web Crypto API
+    const pkcs8Header = new Uint8Array([
+      0x30, 0x59, // SEQUENCE, length 89 bytes
+      0x02, 0x01, 0x00, // INTEGER 0 (version)
+      0x30, 0x13, // SEQUENCE, length 19 bytes
+      0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01, // OID ecPublicKey
+      0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, // OID prime256v1 (P-256)
+      0x04, 0x41, // OCTET STRING, length 65 bytes
+      0x04, // uncompressed point indicator
+    ])
+    const pkcs8Key = concat(pkcs8Header, rawKey) as Uint8Array<ArrayBuffer>
+
+    const privateKey = await crypto.subtle.importKey(
+      'pkcs8', pkcs8Key.buffer as ArrayBuffer, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
+    )
+    const signature = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(signingInput)
+    )
+    return `${signingInput}.${base64UrlEncode(signature)}`
+  } else if (rawKey.length >= 119) {
+    // Já é PKCS#8 - importar diretamente
+    const privateKey = await crypto.subtle.importKey(
+      'pkcs8', rawKey.buffer as ArrayBuffer, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
+    )
+    const signature = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(signingInput)
+    )
+    return `${signingInput}.${base64UrlEncode(signature)}`
+  } else {
+    throw new Error(`VAPID_PRIVATE_KEY decodificada tem comprimento inválido: ${rawKey.length} bytes (esperado 32 para escalar ou ~119 para PKCS#8)`)
   }
-
-  // Converter escalar bruto para PKCS#8 para Web Crypto API
-  // Estrutura PKCS#8 para ECDSA P-256:
-  // SEQUENCE {
-  //   INTEGER 0
-  //   SEQUENCE {
-  //     OID ecPublicKey
-  //     OID prime256v1 (P-256)
-  //   }
-  //   OCTET STRING 0x04 + x (32 bytes)
-  // }
-  const pkcs8Header = new Uint8Array([
-    0x30, 0x59, // SEQUENCE, length 89 bytes
-    0x02, 0x01, 0x00, // INTEGER 0 (version)
-    0x30, 0x13, // SEQUENCE, length 19 bytes
-    0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01, // OID ecPublicKey
-    0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, // OID prime256v1 (P-256)
-    0x04, 0x41, // OCTET STRING, length 65 bytes
-    0x04, // uncompressed point indicator
-  ])
-  const pkcs8Key = concat(pkcs8Header, rawKey) as Uint8Array<ArrayBuffer>
-
-  const privateKey = await crypto.subtle.importKey(
-    'pkcs8', pkcs8Key.buffer as ArrayBuffer, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
-  )
-  const signature = await crypto.subtle.sign(
-    { name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(signingInput)
-  )
-  return `${signingInput}.${base64UrlEncode(signature)}`
 }
 
 async function encryptPushPayload(
