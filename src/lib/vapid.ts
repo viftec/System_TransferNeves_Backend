@@ -95,15 +95,16 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
     throw new Error(`VAPID_PRIVATE_KEY está em formato PEM. O código espera Base64URL (sem cabeçalho/rodapé PEM).`)
   }
 
-  // Aceitar tanto escalar (43 chars) quanto PKCS#8 (65 chars para P-256)
-  if (cleanedKey.length !== 43 && cleanedKey.length !== 65) {
-    throw new Error(`VAPID_PRIVATE_KEY tem comprimento inválido: ${cleanedKey.length} caracteres (esperado 43 para escalar ou 65 para PKCS#8 em Base64URL)`)
+  // Aceitar tanto escalar (43 chars) quanto PKCS#8 (varia entre 60-65 após limpeza de espaços)
+  // A chave pode ter espaços no meio, então validamos após limpeza
+  if (cleanedKey.length < 43 || cleanedKey.length > 65) {
+    throw new Error(`VAPID_PRIVATE_KEY tem comprimento inválido: ${cleanedKey.length} caracteres (esperado 43 para escalar ou 60-65 para PKCS#8 em Base64URL)`)
   }
 
   const rawKey = base64UrlDecode(cleanedKey, 'VAPID_PRIVATE_KEY')
 
   // Se for 32 bytes, é escalar bruto - precisa converter para PKCS#8
-  // Se for ~119 bytes, já é PKCS#8 - pode importar diretamente
+  // Se for ~110-120 bytes, já é PKCS#8 - pode importar diretamente
   if (rawKey.length === 32) {
     // Converter escalar bruto para PKCS#8 para Web Crypto API
     const pkcs8Header = new Uint8Array([
@@ -124,8 +125,9 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
       { name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(signingInput)
     )
     return `${signingInput}.${base64UrlEncode(signature)}`
-  } else if (rawKey.length >= 119) {
+  } else if (rawKey.length >= 110 && rawKey.length <= 120) {
     // Já é PKCS#8 - importar diretamente
+    console.log(`[vapid] Importando chave PKCS#8 com ${rawKey.length} bytes`)
     const privateKey = await crypto.subtle.importKey(
       'pkcs8', rawKey.buffer as ArrayBuffer, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
     )
@@ -134,7 +136,7 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
     )
     return `${signingInput}.${base64UrlEncode(signature)}`
   } else {
-    throw new Error(`VAPID_PRIVATE_KEY decodificada tem comprimento inválido: ${rawKey.length} bytes (esperado 32 para escalar ou ~119 para PKCS#8)`)
+    throw new Error(`VAPID_PRIVATE_KEY decodificada tem comprimento inválido: ${rawKey.length} bytes (esperado 32 para escalar ou 110-120 para PKCS#8)`)
   }
 }
 
