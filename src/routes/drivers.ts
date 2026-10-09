@@ -555,6 +555,18 @@ driversRoutes.post('/me/push/test', async (c) => {
 
   console.log(`[drivers] Teste de notificação solicitado por userId: ${user.sub}, driverId: ${driver.id}`)
 
+  // Diagnóstico da configuração VAPID (sem revelar valores)
+  const vapidDiag = {
+    hasPublicKey: !!c.env.VAPID_PUBLIC_KEY,
+    hasPrivateKey: !!c.env.VAPID_PRIVATE_KEY,
+    hasSubject: !!c.env.VAPID_SUBJECT,
+    publicKeyLength: c.env.VAPID_PUBLIC_KEY?.length || 0,
+    privateKeyLength: c.env.VAPID_PRIVATE_KEY?.length || 0,
+    privateKeyHasPEM: c.env.VAPID_PRIVATE_KEY?.includes('-----BEGIN') || false,
+    privateKeyHasQuotes: c.env.VAPID_PRIVATE_KEY?.startsWith('"') || c.env.VAPID_PRIVATE_KEY?.startsWith("'") || false,
+  }
+  console.log('[drivers] Diagnóstico VAPID:', vapidDiag)
+
   // Buscar subscriptions ativas do usuário
   const subs = await db.select().from(pushSubscriptions)
     .where(and(eq(pushSubscriptions.userId, user.sub), eq(pushSubscriptions.active, true)))
@@ -564,7 +576,8 @@ driversRoutes.post('/me/push/test', async (c) => {
     return c.json({
       success: false,
       message: 'Nenhuma assinatura push ativa encontrada. Registre as notificações novamente.',
-      subscriptionsFound: 0
+      subscriptionsFound: 0,
+      vapidDiag
     }, 400)
   }
 
@@ -585,11 +598,22 @@ driversRoutes.post('/me/push/test', async (c) => {
 
   console.log(`[drivers] Resultado do teste de notificação:`, result)
 
+  if (result.notified === 0) {
+    return c.json({
+      success: false,
+      message: 'Falha ao enviar notificação de teste. Verifique os logs para detalhes.',
+      subscriptionsSent: 0,
+      totalSubscriptions: subs.length,
+      vapidDiag
+    }, 500)
+  }
+
   return c.json({
     success: true,
     message: 'Solicitação de teste enviada. Verifique se a notificação foi recebida.',
     subscriptionsSent: result.notified,
     totalSubscriptions: subs.length,
-    note: 'O sucesso do envio não garante que a notificação foi exibida. Verifique seu dispositivo.'
+    note: 'O sucesso do envio não garante que a notificação foi exibida. Verifique seu dispositivo.',
+    vapidDiag
   })
 })

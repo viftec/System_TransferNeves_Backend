@@ -31,7 +31,9 @@ function base64UrlDecode(base64url: string, fieldName: string = 'unknown'): Uint
 
   // Validar caracteres permitidos em Base64URL (a-z, A-Z, 0-9, -, _)
   if (!/^[a-zA-Z0-9\-_]+$/.test(base64url)) {
-    throw new Error(`base64UrlDecode: campo ${fieldName} contém caracteres inválidos (apenas a-z, A-Z, 0-9, -, _ são permitidos). Comprimento: ${length}`)
+    // Identificar caracteres inválidos para diagnóstico
+    const invalidChars = base64url.replace(/[a-zA-Z0-9\-_]/g, '').substring(0, 10)
+    throw new Error(`base64UrlDecode: campo ${fieldName} contém caracteres inválidos (apenas a-z, A-Z, 0-9, -, _ são permitidos). Comprimento: ${length}. Caracteres inválidos encontrados: "${invalidChars}"`)
   }
 
   // Rejeitar comprimentos impossíveis (congruente a 1 módulo 4 após padding)
@@ -52,7 +54,8 @@ function base64UrlDecode(base64url: string, fieldName: string = 'unknown'): Uint
     for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i)
     return arr as Uint8Array<ArrayBuffer>
   } catch (err) {
-    throw new Error(`base64UrlDecode falhou para campo ${fieldName}: ${err}. Comprimento original: ${length}`)
+    const errMessage = err instanceof Error ? err.message : String(err)
+    throw new Error(`base64UrlDecode falhou para campo ${fieldName}: ${errMessage}. Comprimento original: ${length}, após padding: ${padded.length}`)
   }
 }
 
@@ -76,11 +79,32 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
   const header = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })))
   const claims = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ aud: audience, exp: now + 43200, sub: subject })))
   const signingInput = `${header}.${claims}`
-  const rawKey = base64UrlDecode(privateKeyBase64, 'VAPID_PRIVATE_KEY')
+
+  // Validar formato da chave antes de decodificar
+  const keyLength = privateKeyBase64.length
+
+  // Remover espaços, aspas e quebras de linha se existirem (comum em arquivos .env)
+  const cleanedKey = privateKeyBase64.trim().replace(/^["']|["']$/g, '').replace(/\s+/g, '')
+
+  if (cleanedKey !== privateKeyBase64) {
+    console.warn(`[vapid] VAPID_PRIVATE_KEY foi limpa: comprimento original ${keyLength}, após limpeza ${cleanedKey.length}`)
+  }
+
+  // Verificar se parece estar em formato PEM (começa com -----BEGIN)
+  if (cleanedKey.includes('-----BEGIN')) {
+    throw new Error(`VAPID_PRIVATE_KEY está em formato PEM, mas o código espera Base64URL escalar. Remova o cabeçalho/rodapé PEM e use apenas o conteúdo Base64.`)
+  }
+
+  // Verificar comprimento esperado para escalar P-256 em Base64URL (43 caracteres)
+  if (cleanedKey.length !== 43) {
+    throw new Error(`VAPID_PRIVATE_KEY tem comprimento inválido: ${cleanedKey.length} caracteres (esperado 43 caracteres para escalar P-256 em Base64URL)`)
+  }
+
+  const rawKey = base64UrlDecode(cleanedKey, 'VAPID_PRIVATE_KEY')
 
   // Validar comprimento da chave privada (32 bytes para escalar P-256)
   if (rawKey.length !== 32) {
-    throw new Error(`VAPID_PRIVATE_KEY tem comprimento inválido: ${rawKey.length} bytes (esperado 32 bytes para escalar P-256)`)
+    throw new Error(`VAPID_PRIVATE_KEY decodificada tem comprimento inválido: ${rawKey.length} bytes (esperado 32 bytes para escalar P-256)`)
   }
 
   // Converter escalar bruto para PKCS#8 para Web Crypto API
