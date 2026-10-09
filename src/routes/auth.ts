@@ -441,7 +441,9 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
   const user = c.get('jwtPayload')
   const { endpoint, keys } = c.req.valid('json')
 
-  console.log('[auth] Registrando push subscription para userId:', user.sub, 'role:', user.role)
+  console.log('[auth] Registrando push subscription')
+  console.log('[auth] userId (user.sub):', user.sub)
+  console.log('[auth] role:', user.role)
   console.log('[auth] Endpoint:', endpoint.substring(0, 50) + '...')
 
   // Verificar se já existe subscription
@@ -451,6 +453,7 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
 
   if (existing) {
     console.log('[auth] Atualizando subscription existente:', existing.id)
+    console.log('[auth] Subscription anterior userId:', existing.userId, 'driverId:', existing.driverId)
     await db.update(pushSubscriptions)
       .set({
         userId: user.sub,
@@ -460,6 +463,7 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
         updatedAt: new Date().toISOString(),
       })
       .where(eq(pushSubscriptions.id, existing.id))
+    console.log('[auth] Subscription atualizada com userId:', user.sub)
   } else {
     // Se for motorista, tenta achar o driverId
     let driverId = null
@@ -473,7 +477,8 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
       }
     }
 
-    console.log('[auth] Criando nova subscription com driverId:', driverId)
+    console.log('[auth] Criando nova subscription')
+    console.log('[auth] Será salvo com userId:', user.sub, 'driverId:', driverId)
     await db.insert(pushSubscriptions).values({
       id: crypto.randomUUID(),
       userId: user.sub,
@@ -483,7 +488,14 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
       authKey: keys.auth,
       active: true,
     })
+    console.log('[auth] Subscription criada com sucesso')
   }
+
+  // Verificar todas as subscriptions deste usuário
+  const allSubs = await db.select().from(pushSubscriptions)
+    .where(eq(pushSubscriptions.userId, user.sub))
+    .all()
+  console.log('[auth] Total de subscriptions ativas para userId', user.sub, ':', allSubs.filter(s => s.active).length)
 
   return c.json({ success: true })
 })

@@ -144,24 +144,35 @@ export async function notifyDriver(
 ) {
   console.log(`[push] notifyDriver chamado para userId: ${driverUserId}`)
   console.log(`[push] Payload:`, payload)
-  
+
   const vapid = getVapid(env)
   if (!vapid) {
     console.log('[push] VAPID não configurado - pulando envio')
     return { notified: 0 }
   }
-  
+
   try {
+    // Primeiro, buscar todas as subscriptions deste usuário (ativo ou não)
+    const allSubs = await db.select().from(pushSubscriptions)
+      .where(eq(pushSubscriptions.userId, driverUserId))
+      .all()
+
+    console.log(`[push] Total de subscriptions (ativas + inativas) para userId ${driverUserId}:`, allSubs.length)
+    allSubs.forEach(s => {
+      console.log(`[push] - Subscription id: ${s.id}, active: ${s.active}, driverId: ${s.driverId}`)
+    })
+
+    // Agora buscar apenas as ativas
     const subs = await db.select().from(pushSubscriptions)
       .where(and(eq(pushSubscriptions.userId, driverUserId), eq(pushSubscriptions.active, true)))
       .all()
-    
+
     console.log(`[push] ${subs.length} subscriptions ativas encontradas para userId: ${driverUserId}`)
-    
+
     if (subs.length === 0) {
       console.log('[push] Nenhuma subscription ativa encontrada')
     }
-    
+
     const notified = await sendToSubscriptions(db, subs, payload, vapid)
     console.log(`[push] notifyDriver concluído: ${notified} notificações enviadas`)
     return { notified }
