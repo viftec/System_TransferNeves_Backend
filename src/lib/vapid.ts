@@ -151,6 +151,14 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
       new TextEncoder().encode(signingInput)
     )
 
+    console.log('[vapid] Diagnóstico JWT:', {
+      signatureLength: signature.byteLength,
+      audience,
+      subjectStartsWithMailto: subject.startsWith('mailto:'),
+      subjectLength: subject.length,
+      signingInputParts: signingInput.split('.').length,
+    })
+
     return `${signingInput}.${base64UrlEncode(signature)}`
   } else if (rawKey.length >= 110 && rawKey.length <= 120) {
     // Já é PKCS#8 - importar diretamente
@@ -161,6 +169,15 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
     const signature = await crypto.subtle.sign(
       { name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(signingInput)
     )
+
+    console.log('[vapid] Diagnóstico JWT:', {
+      signatureLength: signature.byteLength,
+      audience,
+      subjectStartsWithMailto: subject.startsWith('mailto:'),
+      subjectLength: subject.length,
+      signingInputParts: signingInput.split('.').length,
+    })
+
     return `${signingInput}.${base64UrlEncode(signature)}`
   } else {
     throw new Error(`VAPID_PRIVATE_KEY decodificada tem comprimento inválido: ${rawKey.length} bytes (esperado 32 para escalar ou 110-120 para PKCS#8)`)
@@ -270,7 +287,7 @@ export async function sendWebPush(
       headers: {
         'Content-Type': 'application/octet-stream',
         'Content-Encoding': 'aes128gcm',
-        'Authorization': `vapid t=${jwt},k=${vapid.publicKey}`,
+        'Authorization': `vapid t=${jwt}, k=${vapid.publicKey}`,
         'TTL': '86400',
         'Urgency': 'high',
       },
