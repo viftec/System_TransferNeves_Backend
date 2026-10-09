@@ -370,6 +370,10 @@ driversRoutes.patch('/:id/availability', async (c) => {
   const user = c.get('jwtPayload')
   const { status } = await c.req.json()
 
+  // Apenas permitir online/offline
+  const allowed = ['online', 'offline']
+  if (!allowed.includes(status)) return c.json({ error: 'Status inválido para esta operação' }, 400)
+
   // Verificar se é o próprio motorista
   let driver;
   if (id === 'me') {
@@ -384,8 +388,12 @@ driversRoutes.patch('/:id/availability', async (c) => {
 
   if (!driver) return c.json({ error: 'Motorista não encontrado' }, 404)
 
+  // Não permitir mudar status se estiver pending ou suspended
+  if (driver.status === 'pending') return c.json({ error: 'Sua conta ainda está em análise' }, 403)
+  if (driver.status === 'suspended') return c.json({ error: 'Sua conta está suspensa' }, 403)
+
   const oldStatus = driver.status
-  await db.update(drivers).set({ status, updatedAt: new Date().toISOString() }).where(eq(drivers.id, id))
+  await db.update(drivers).set({ status, updatedAt: new Date().toISOString() }).where(eq(drivers.id, driver.id))
   
   // Enviar notificação ao motorista sobre mudança de status
   if (oldStatus !== status) {
@@ -398,25 +406,13 @@ driversRoutes.patch('/:id/availability', async (c) => {
         : 'Você não está mais disponível para receber corridas.',
       icon: '/apple-icon.png',
       tag: 'status-change',
-      requireInteraction: false,
+      requireInteraction: true,
       data: { action: 'status_change', status }
     }
     console.log(`[drivers] Enviando notificação de status para userId: ${driver.userId}`)
-    const result = await notifyDriver(db, driver.userId, payload, c.env)
-    console.log(`[drivers] Resultado da notificação:`, result)
+    await notifyDriver(db, driver.userId, payload, c.env)
   }
   
-  return c.json({ success: true, status })
-
-  // Apenas permitir online/offline
-  const allowed = ['online', 'offline']
-  if (!allowed.includes(status)) return c.json({ error: 'Status inválido para esta operação' }, 400)
-
-  // Não permitir mudar status se estiver pending ou suspended
-  if (driver.status === 'pending') return c.json({ error: 'Sua conta ainda está em análise' }, 403)
-  if (driver.status === 'suspended') return c.json({ error: 'Sua conta está suspensa' }, 403)
-
-  await db.update(drivers).set({ status, updatedAt: new Date().toISOString() }).where(eq(drivers.id, driver.id))
   return c.json({ success: true, status })
 })
 
