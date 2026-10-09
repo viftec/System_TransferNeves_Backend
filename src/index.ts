@@ -228,6 +228,31 @@ async function runScheduled(env: Env) {
     stats.proofExpired = await markExpiredProofs(db, nowIso)
     stats.proofDeleted = await hardDeleteExpiredProofs(env, db, now)
 
+    // ── 7. Notificar motoristas offline a cada 3 horas (0:00, 3:00, 6:00, ...) ─────
+    const hour = now.getHours()
+    if (hour % 3 === 0) { // Roda a cada 3 horas
+      const offlineDrivers = await db.select({ driver: drivers, user: users })
+        .from(drivers)
+        .innerJoin(users, eq(drivers.userId, users.id))
+        .where(and(
+          eq(drivers.status, 'offline'),
+          eq(drivers.documentVerified, true) // Só motoristas aprovados
+        ))
+        .all()
+
+      for (const { driver, user }) {
+        await notifyDriver(db, user.id, {
+          title: '🔴 Você está OFFLINE',
+          body: 'Para receber corridas, você precisa ficar online. Abra o app e clique em "Ficar online".',
+          icon: '/apple-icon.png',
+          tag: 'offline-reminder',
+          requireInteraction: false,
+          data: { action: 'go_online' },
+        }, env)
+      }
+      console.log(`[cron] ${offlineDrivers.length} motoristas offline notificados`)
+    }
+
     console.log(`[cron] expired=${stats.expired} cancelled=${stats.cancelled} alarm5=${stats.alarm5min} late=${stats.lateAlerts} autoCancel1h=${stats.autoCancel1h} proofExpired=${stats.proofExpired} proofDeleted=${stats.proofDeleted}`)
     return { success: true, ...stats }
   } catch (error: any) {

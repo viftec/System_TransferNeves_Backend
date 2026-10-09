@@ -384,6 +384,27 @@ driversRoutes.patch('/:id/availability', async (c) => {
 
   if (!driver) return c.json({ error: 'Motorista não encontrado' }, 404)
 
+  const oldStatus = driver.status
+  await db.update(drivers).set({ status, updatedAt: new Date().toISOString() }).where(eq(drivers.id, id))
+  
+  // Enviar notificação ao motorista sobre mudança de status
+  if (oldStatus !== status) {
+    const { notifyDriver } = await import('../lib/push')
+    const payload = {
+      title: status === 'online' ? '🟢 Você está ONLINE' : '🔴 Você está OFFLINE',
+      body: status === 'online' 
+        ? 'Você está disponível para receber corridas.' 
+        : 'Você não está mais disponível para receber corridas.',
+      icon: '/apple-icon.png',
+      tag: 'status-change',
+      requireInteraction: false,
+      data: { action: 'status_change', status }
+    }
+    await notifyDriver(db, driver.userId, payload, c.env)
+  }
+  
+  return c.json({ success: true, status })
+
   // Apenas permitir online/offline
   const allowed = ['online', 'offline']
   if (!allowed.includes(status)) return c.json({ error: 'Status inválido para esta operação' }, 400)
