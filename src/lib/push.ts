@@ -1,7 +1,7 @@
 import { pushSubscriptions, drivers, vehicles, users } from '../db/schema'
 import { eq, and } from 'drizzle-orm'
 import type { DB } from '../db'
-import { sendWebPush, type VapidConfig, type PushPayload } from './vapid'
+import { sendWebPush, type VapidConfig, type PushPayload, type PushSendResult } from './vapid'
 
 function getVapid(env: { VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }): VapidConfig | null {
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY || !env.VAPID_SUBJECT) {
@@ -24,19 +24,50 @@ async function sendToSubscriptions(
 ): Promise<number> {
   console.log(`[push] Enviando para ${subscriptions.length} subscriptions`)
   let sent = 0
+  let configError = false
+
   for (const sub of subscriptions) {
-    const ok = await sendWebPush({ endpoint: sub.endpoint, p256dhKey: sub.p256dhKey, authKey: sub.authKey }, payload, vapid)
-    if (ok) {
+    const result = await sendWebPush({ endpoint: sub.endpoint, p256dhKey: sub.p256dhKey, authKey: sub.authKey }, payload, vapid)
+
+    if (result.success) {
       sent++
       console.log(`[push] ✓ Enviado para ${sub.endpoint.substring(0, 50)}...`)
     } else {
-      console.log(`[push] ✗ Falha ao enviar para ${sub.endpoint.substring(0, 50)}...`)
-      // Se falhou, desativar subscription (endpoint pode ter expirado)
-      await db.update(pushSubscriptions)
-        .set({ active: false, updatedAt: new Date().toISOString() })
-        .where(eq(pushSubscriptions.id, sub.id))
+      console.log(`[push] ✗ Falha ao enviar para ${sub.endpoint.substring(0, 50)}... (${result.error})`)
+
+      // Tratar diferentes tipos de erro
+      if (result.error === 'config_error') {
+        // Erro de configuração global - não desativar assinaturas
+        configError = true
+        console.error(`[push] Erro de configuração global VAPID - pulando desativação de assinaturas`)
+        break // Não continue tentando outras assinaturas se for erro de config
+      }
+      if (result.error === 'subscription_invalid') {
+        // Assinatura específica inválida - desativar esta assinatura
+        console.log(`[push] Desativando assinatura inválida: ${sub.id}`)
+        await db.update(pushSubscriptions)
+          .set({ active: false, updatedAt: new Date().toISOString() })
+          .where(eq(pushSubscriptions.id, sub.id))
+      }
+      if (result.error === 'http_permanent') {
+        // Endpoint permanentemente inválido (404, 410) - desativar assinatura
+        console.log(`[push] Desativando assinatura com endpoint expirado: ${sub.id}`)
+        await db.update(pushSubscriptions)
+          .set({ active: false, updatedAt: new Date().toISOString() })
+          .where(eq(pushSubscriptions.id, sub.id))
+      }
+      if (result.error === 'http_temporary' || result.error === 'rate_limited') {
+        // Erro temporário - não desativar assinatura
+        const statusInfo = result.error === 'http_temporary' ? ` (${result.status})` : ''
+        console.log(`[push] Erro temporário${statusInfo} - mantendo assinatura ativa`)
+      }
     }
   }
+
+  if (configError) {
+    console.error(`[push] Abortando envio devido a erro de configuração global VAPID`)
+  }
+
   console.log(`[push] Total enviado: ${sent}/${subscriptions.length}`)
   return sent
 }

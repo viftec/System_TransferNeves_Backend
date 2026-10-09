@@ -451,29 +451,46 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
   console.log('[auth]   p256dh (primeiros 50 chars):', keys.p256dh.substring(0, 50))
   console.log('[auth]   auth (primeiros 50 chars):', keys.auth.substring(0, 50))
 
-  // Validar se as chaves são base64 válido
-  const isValidBase64 = (str: string) => {
+  // Validar se as chaves são base64URL válido (estricto, sem limpeza)
+  const isValidBase64Url = (str: string, fieldName: string): { valid: boolean; error?: string } => {
+    if (!str || typeof str !== 'string') {
+      return { valid: false, error: `${fieldName} está vazio ou não é string` }
+    }
+
+    const length = str.length
+
+    // Validar caracteres permitidos em Base64URL
+    if (!/^[a-zA-Z0-9\-_]+$/.test(str)) {
+      return { valid: false, error: `${fieldName} contém caracteres inválidos. Comprimento: ${length}` }
+    }
+
+    // Rejeitar comprimentos impossíveis
+    if (length % 4 === 1) {
+      return { valid: false, error: `${fieldName} tem comprimento impossível (${length})` }
+    }
+
+    // Tentar decodificar
     try {
-      const cleaned = str.replace(/[^a-zA-Z0-9\-_]/g, '')
-      const base64 = cleaned.replace(/-/g, '+').replace(/_/g, '/')
-      const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=')
+      const base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+      const paddingNeeded = (4 - (base64.length % 4)) % 4
+      const padded = base64.padEnd(base64.length + paddingNeeded, '=')
       atob(padded)
-      return true
-    } catch {
-      return false
+      return { valid: true }
+    } catch (err) {
+      return { valid: false, error: `${fieldName} falhou na decodificação: ${err}` }
     }
   }
 
-  const p256Valid = isValidBase64(keys.p256dh)
-  const authValid = isValidBase64(keys.auth)
+  const p256Result = isValidBase64Url(keys.p256dh, 'p256dh')
+  const authResult = isValidBase64Url(keys.auth, 'auth')
 
   console.log('[auth] Validação das chaves:')
-  console.log('[auth]   p256dh válido:', p256Valid)
-  console.log('[auth]   auth válido:', authValid)
+  console.log('[auth]   p256dh válido:', p256Result.valid, p256Result.error || '')
+  console.log('[auth]   auth válido:', authResult.valid, authResult.error || '')
 
-  if (!p256Valid || !authValid) {
-    console.error('[auth] Chaves inválidas recebidas! Nenhuma ação tomada.')
-    return c.json({ success: false, error: 'Chaves inválidas' }, 400)
+  if (!p256Result.valid || !authResult.valid) {
+    console.error('[auth] Chaves inválidas recebidas!')
+    return c.json({ success: false, error: 'Chaves inválidas', details: { p256dh: p256Result.error, auth: authResult.error } }, 400)
   }
 
   // Verificar se já existe subscription
@@ -484,16 +501,30 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
   if (existing) {
     console.log('[auth] Atualizando subscription existente:', existing.id)
     console.log('[auth] Subscription anterior userId:', existing.userId, 'driverId:', existing.driverId)
+
+    // Se for motorista, buscar o driverId atualizado
+    let driverId = existing.driverId
+    if (user.role === 'driver') {
+      const driver = await db.select().from(drivers).where(eq(drivers.userId, user.sub)).get()
+      if (driver) {
+        driverId = driver.id
+        console.log('[auth] Driver encontrado para atualização:', driverId)
+      } else {
+        console.log('[auth] Driver não encontrado para userId:', user.sub, '- mantendo driverId:', driverId)
+      }
+    }
+
     await db.update(pushSubscriptions)
       .set({
         userId: user.sub,
+        driverId,
         p256dhKey: keys.p256dh,
         authKey: keys.auth,
         active: true,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(pushSubscriptions.id, existing.id))
-    console.log('[auth] Subscription atualizada com userId:', user.sub)
+    console.log('[auth] Subscription atualizada com userId:', user.sub, 'driverId:', driverId)
   } else {
     // Se for motorista, tenta achar o driverId
     let driverId = null
@@ -573,14 +604,16 @@ authRoutes.post('/push-subscription/cleanup', authMiddleware, async (c) => {
   let deletedCount = 0
 
   for (const sub of allSubs) {
-    // Validar se as chaves são base64 válido
+    // Validar se as chaves são base64URL válido (estricto, sem limpeza)
     try {
-      // Tenta decodificar as chaves para verificar se são válidas
-      const isValidBase64 = (str: string) => {
+      const isValidBase64Url = (str: string): boolean => {
+        if (!str || typeof str !== 'string') return false
+        if (!/^[a-zA-Z0-9\-_]+$/.test(str)) return false
+        if (str.length % 4 === 1) return false
         try {
-          const cleaned = str.replace(/[^a-zA-Z0-9\-_]/g, '')
-          const base64 = cleaned.replace(/-/g, '+').replace(/_/g, '/')
-          const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=')
+          const base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+          const paddingNeeded = (4 - (base64.length % 4)) % 4
+          const padded = base64.padEnd(base64.length + paddingNeeded, '=')
           atob(padded)
           return true
         } catch {
@@ -588,8 +621,8 @@ authRoutes.post('/push-subscription/cleanup', authMiddleware, async (c) => {
         }
       }
 
-      const p256Valid = isValidBase64(sub.p256dhKey)
-      const authValid = isValidBase64(sub.authKey)
+      const p256Valid = isValidBase64Url(sub.p256dhKey)
+      const authValid = isValidBase64Url(sub.authKey)
 
       if (!p256Valid || !authValid) {
         console.log('[auth] Deletando subscription com chaves inválidas:', sub.id)

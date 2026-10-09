@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { getDb } from '../db'
 import { drivers, vehicles, users, pushSubscriptions } from '../db/schema'
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, and } from 'drizzle-orm'
 import { authMiddleware, adminOnly, type Env } from '../middleware/auth'
 import { hashPassword } from '../lib/hash'
 
@@ -425,6 +425,7 @@ const pushSubscriptionSchema = z.object({
 })
 
 // POST /api/drivers/:id/push-subscription (driver only - registrar push subscription)
+// NOTA: Esta rota é mantida para compatibilidade, mas o frontend usa /api/auth/push-subscription
 driversRoutes.post('/:id/push-subscription', zValidator('json', pushSubscriptionSchema), async (c) => {
   const db = getDb(c.env.DB)
   const id = c.req.param('id') as string
@@ -437,6 +438,35 @@ driversRoutes.post('/:id/push-subscription', zValidator('json', pushSubscription
 
   const driverUser = await db.select().from(users).where(eq(users.id, driver.userId)).get()
   if (driverUser?.id !== user.sub) return c.json({ error: 'Acesso negado' }, 403)
+
+  // Validar chaves (mesma lógica que auth.ts)
+  const isValidBase64Url = (str: string, fieldName: string): { valid: boolean; error?: string } => {
+    if (!str || typeof str !== 'string') {
+      return { valid: false, error: `${fieldName} está vazio ou não é string` }
+    }
+    if (!/^[a-zA-Z0-9\-_]+$/.test(str)) {
+      return { valid: false, error: `${fieldName} contém caracteres inválidos` }
+    }
+    if (str.length % 4 === 1) {
+      return { valid: false, error: `${fieldName} tem comprimento impossível` }
+    }
+    try {
+      const base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+      const paddingNeeded = (4 - (base64.length % 4)) % 4
+      const padded = base64.padEnd(base64.length + paddingNeeded, '=')
+      atob(padded)
+      return { valid: true }
+    } catch (err) {
+      return { valid: false, error: `${fieldName} falhou na decodificação` }
+    }
+  }
+
+  const p256Result = isValidBase64Url(keys.p256dh, 'p256dh')
+  const authResult = isValidBase64Url(keys.auth, 'auth')
+
+  if (!p256Result.valid || !authResult.valid) {
+    return c.json({ success: false, error: 'Chaves inválidas', details: { p256dh: p256Result.error, auth: authResult.error } }, 400)
+  }
 
   // Verificar se já existe subscription, se sim, atualiza
   const existing = await db.select().from(pushSubscriptions)
@@ -505,4 +535,61 @@ driversRoutes.patch('/admin/:id/status', adminOnly, async (c) => {
   const active = status === 'active'
   await db.update(users).set({ active, updatedAt: new Date().toISOString() }).where(eq(users.id, id))
   return c.json({ success: true, status })
+})
+
+// POST /api/drivers/me/push/test (driver only - testar notificação push)
+driversRoutes.post('/me/push/test', async (c) => {
+  const db = getDb(c.env.DB)
+  const user = c.get('jwtPayload')
+
+  // Verificar se o usuário é motorista
+  if (user.role !== 'driver') {
+    return c.json({ error: 'Apenas motoristas podem testar notificações' }, 403)
+  }
+
+  // Buscar o perfil do motorista
+  const driver = await db.select().from(drivers).where(eq(drivers.userId, user.sub)).get()
+  if (!driver) {
+    return c.json({ error: 'Perfil de motorista não encontrado' }, 404)
+  }
+
+  console.log(`[drivers] Teste de notificação solicitado por userId: ${user.sub}, driverId: ${driver.id}`)
+
+  // Buscar subscriptions ativas do usuário
+  const subs = await db.select().from(pushSubscriptions)
+    .where(and(eq(pushSubscriptions.userId, user.sub), eq(pushSubscriptions.active, true)))
+    .all()
+
+  if (subs.length === 0) {
+    return c.json({
+      success: false,
+      message: 'Nenhuma assinatura push ativa encontrada. Registre as notificações novamente.',
+      subscriptionsFound: 0
+    }, 400)
+  }
+
+  console.log(`[drivers] ${subs.length} assinaturas ativas encontradas para teste`)
+
+  // Enviar notificação de teste
+  const { notifyDriver } = await import('../lib/push')
+  const payload = {
+    title: 'Transfer Neves — Teste de notificação',
+    body: 'Este é um teste do sistema de notificações. Se você recebeu esta mensagem, o push está funcionando corretamente.',
+    icon: '/apple-icon.png',
+    tag: 'push-test',
+    requireInteraction: false,
+    data: { action: 'push_test', timestamp: new Date().toISOString() }
+  }
+
+  const result = await notifyDriver(db, user.sub, payload, c.env)
+
+  console.log(`[drivers] Resultado do teste de notificação:`, result)
+
+  return c.json({
+    success: true,
+    message: 'Solicitação de teste enviada. Verifique se a notificação foi recebida.',
+    subscriptionsSent: result.notified,
+    totalSubscriptions: subs.length,
+    note: 'O sucesso do envio não garante que a notificação foi exibida. Verifique seu dispositivo.'
+  })
 })
