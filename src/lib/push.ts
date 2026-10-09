@@ -4,7 +4,14 @@ import type { DB } from '../db'
 import { sendWebPush, type VapidConfig, type PushPayload } from './vapid'
 
 function getVapid(env: { VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }): VapidConfig | null {
-  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY || !env.VAPID_SUBJECT) return null
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY || !env.VAPID_SUBJECT) {
+    console.warn('[push] VAPID keys não configuradas:', {
+      hasPublicKey: !!env.VAPID_PUBLIC_KEY,
+      hasPrivateKey: !!env.VAPID_PRIVATE_KEY,
+      hasSubject: !!env.VAPID_SUBJECT
+    })
+    return null
+  }
   return { publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY, subject: env.VAPID_SUBJECT }
 }
 

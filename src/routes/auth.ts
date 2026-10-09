@@ -441,12 +441,16 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
   const user = c.get('jwtPayload')
   const { endpoint, keys } = c.req.valid('json')
 
+  console.log('[auth] Registrando push subscription para userId:', user.sub, 'role:', user.role)
+  console.log('[auth] Endpoint:', endpoint.substring(0, 50) + '...')
+
   // Verificar se já existe subscription
   const existing = await db.select().from(pushSubscriptions)
     .where(eq(pushSubscriptions.endpoint, endpoint))
     .get()
 
   if (existing) {
+    console.log('[auth] Atualizando subscription existente:', existing.id)
     await db.update(pushSubscriptions)
       .set({
         userId: user.sub,
@@ -461,9 +465,15 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
     let driverId = null
     if (user.role === 'driver') {
       const driver = await db.select().from(drivers).where(eq(drivers.userId, user.sub)).get()
-      if (driver) driverId = driver.id
+      if (driver) {
+        driverId = driver.id
+        console.log('[auth] Driver encontrado:', driverId)
+      } else {
+        console.log('[auth] Driver não encontrado para userId:', user.sub)
+      }
     }
 
+    console.log('[auth] Criando nova subscription com driverId:', driverId)
     await db.insert(pushSubscriptions).values({
       id: crypto.randomUUID(),
       userId: user.sub,
