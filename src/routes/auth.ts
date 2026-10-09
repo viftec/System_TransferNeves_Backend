@@ -445,6 +445,36 @@ authRoutes.post('/push-subscription', authMiddleware, zValidator('json', pushSub
   console.log('[auth] userId (user.sub):', user.sub)
   console.log('[auth] role:', user.role)
   console.log('[auth] Endpoint:', endpoint.substring(0, 50) + '...')
+  console.log('[auth] Chaves recebidas:')
+  console.log('[auth]   p256dh length:', keys.p256dh.length)
+  console.log('[auth]   auth length:', keys.auth.length)
+  console.log('[auth]   p256dh (primeiros 50 chars):', keys.p256dh.substring(0, 50))
+  console.log('[auth]   auth (primeiros 50 chars):', keys.auth.substring(0, 50))
+
+  // Validar se as chaves são base64 válido
+  const isValidBase64 = (str: string) => {
+    try {
+      const cleaned = str.replace(/[^a-zA-Z0-9\-_]/g, '')
+      const base64 = cleaned.replace(/-/g, '+').replace(/_/g, '/')
+      const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=')
+      atob(padded)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  const p256Valid = isValidBase64(keys.p256dh)
+  const authValid = isValidBase64(keys.auth)
+
+  console.log('[auth] Validação das chaves:')
+  console.log('[auth]   p256dh válido:', p256Valid)
+  console.log('[auth]   auth válido:', authValid)
+
+  if (!p256Valid || !authValid) {
+    console.error('[auth] Chaves inválidas recebidas! Nenhuma ação tomada.')
+    return c.json({ success: false, error: 'Chaves inválidas' }, 400)
+  }
 
   // Verificar se já existe subscription
   const existing = await db.select().from(pushSubscriptions)
