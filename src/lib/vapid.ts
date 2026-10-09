@@ -80,30 +80,39 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
   const claims = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ aud: audience, exp: now + 43200, sub: subject })))
   const signingInput = `${header}.${claims}`
 
-  // Validar formato da chave antes de decodificar
-  const keyLength = privateKeyBase64.length
-
-  // Remover espaços, aspas e quebras de linha se existirem (comum em arquivos .env)
-  // Também remover caracteres que definitivamente não são Base64URL (comum em erros de cópia)
-  const cleanedKey = privateKeyBase64
-    .trim()
-    .replace(/^["']|["']$/g, '')
-    .replace(/\s+/g, '')
-    .replace(/[^a-zA-Z0-9\-_]/g, '') // Remove caracteres que não são Base64URL
-
-  if (cleanedKey !== privateKeyBase64) {
-    console.warn(`[vapid] VAPID_PRIVATE_KEY foi limpa: comprimento original ${keyLength}, após limpeza ${cleanedKey.length}`)
+  // Validar e normalizar a chave privada VAPID.
+  if (typeof privateKeyBase64 !== 'string' || !privateKeyBase64) {
+    throw new Error('VAPID_PRIVATE_KEY ausente ou inválida')
   }
 
-  // Verificar se parece estar em formato PEM (começa com -----BEGIN)
+  // Remover apenas espaços externos e aspas que envolvem toda a chave.
+  const cleanedKey = privateKeyBase64.trim().replace(/^(['"])(.*)\1$/, '$2')
+
+  // Não remover espaços internos silenciosamente.
+  if (/\s/.test(cleanedKey)) {
+    throw new Error('VAPID_PRIVATE_KEY contém espaços ou quebras de linha internas')
+  }
+
+  // Rejeitar PEM explicitamente.
   if (cleanedKey.includes('-----BEGIN')) {
-    throw new Error(`VAPID_PRIVATE_KEY está em formato PEM. O código espera Base64URL (sem cabeçalho/rodapé PEM).`)
+    throw new Error(
+      'VAPID_PRIVATE_KEY está em formato PEM. É esperado Base64URL.'
+    )
   }
 
-  // Aceitar tanto escalar (43 chars) quanto PKCS#8 (varia entre 60-65 após limpeza de espaços)
-  // A chave pode ter espaços no meio, então validamos após limpeza
-  if (cleanedKey.length < 43 || cleanedKey.length > 65) {
-    throw new Error(`VAPID_PRIVATE_KEY tem comprimento inválido: ${cleanedKey.length} caracteres (esperado 43 para escalar ou 60-65 para PKCS#8 em Base64URL)`)
+  // Aceitar somente caracteres Base64URL.
+  if (!/^[a-zA-Z0-9_-]+$/.test(cleanedKey)) {
+    throw new Error(
+      'VAPID_PRIVATE_KEY contém caracteres inválidos. É esperado Base64URL.'
+    )
+  }
+
+  // Uma chave escalar P-256 de 32 bytes corresponde a 43 caracteres Base64URL.
+  // O suporte a PKCS#8 deve ser validado separadamente, se realmente necessário.
+  if (cleanedKey.length !== 43) {
+    throw new Error(
+      `VAPID_PRIVATE_KEY tem comprimento inválido: ${cleanedKey.length} caracteres (esperado 43 para chave P-256 gerada por web-push)`
+    )
   }
 
   const rawKey = base64UrlDecode(cleanedKey, 'VAPID_PRIVATE_KEY')
@@ -111,24 +120,37 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
   // Se for 32 bytes, é escalar bruto - precisa converter para PKCS#8
   // Se for ~110-120 bytes, já é PKCS#8 - pode importar diretamente
   if (rawKey.length === 32) {
-    // Converter escalar bruto para PKCS#8 para Web Crypto API
+    // Escalar privado P-256 de 32 bytes para PKCS#8.
+    // O PKCS#8 contém uma estrutura ECPrivateKey válida,
+    // não apenas o escalar precedido de um cabeçalho genérico.
     const pkcs8Header = new Uint8Array([
-      0x30, 0x59, // SEQUENCE, length 89 bytes
-      0x02, 0x01, 0x00, // INTEGER 0 (version)
-      0x30, 0x13, // SEQUENCE, length 19 bytes
-      0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01, // OID ecPublicKey
-      0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, // OID prime256v1 (P-256)
-      0x04, 0x41, // OCTET STRING, length 65 bytes
-      0x04, // uncompressed point indicator
+      0x30, 0x41, // SEQUENCE, 65 bytes de conteúdo
+      0x02, 0x01, 0x00, // Versão PKCS#8: 0
+      0x30, 0x13, // AlgorithmIdentifier
+      0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01,
+      0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07,
+      0x04, 0x27, // OCTET STRING com 39 bytes
+      0x30, 0x25, // ECPrivateKey SEQUENCE com 37 bytes de conteúdo
+      0x02, 0x01, 0x01, // Versão ECPrivateKey: 1
+      0x04, 0x20, // OCTET STRING com o escalar de 32 bytes
     ])
-    const pkcs8Key = concat(pkcs8Header, rawKey) as Uint8Array<ArrayBuffer>
+
+    const pkcs8Key = concat(pkcs8Header, rawKey)
 
     const privateKey = await crypto.subtle.importKey(
-      'pkcs8', pkcs8Key.buffer as ArrayBuffer, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
+      'pkcs8',
+      pkcs8Key.buffer as ArrayBuffer,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign']
     )
+
     const signature = await crypto.subtle.sign(
-      { name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(signingInput)
+      { name: 'ECDSA', hash: 'SHA-256' },
+      privateKey,
+      new TextEncoder().encode(signingInput)
     )
+
     return `${signingInput}.${base64UrlEncode(signature)}`
   } else if (rawKey.length >= 110 && rawKey.length <= 120) {
     // Já é PKCS#8 - importar diretamente
