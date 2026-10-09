@@ -12,6 +12,11 @@ import { eq, and, sql } from 'drizzle-orm'
 import { notifyAdmins, notifyDriver } from './lib/push'
 import { markExpiredProofs, hardDeleteExpiredProofs } from './lib/proof-purge'
 
+type DriverWithUser = {
+  driver: typeof drivers.$inferSelect
+  user: typeof users.$inferSelect
+}
+
 const app = new Hono<{ Bindings: Env }>()
 
 // CORS — permite frontend local, Cloudflare Pages (preview) e Produção
@@ -240,7 +245,9 @@ async function runScheduled(env: Env) {
         ))
         .all()
 
-      for (const { driver, user }) {
+      for (const item of offlineDrivers) {
+        const driver = item.driver
+        const user = item.user
         await notifyDriver(db, user.id, {
           title: '🔴 Você está OFFLINE',
           body: 'Para receber corridas, você precisa ficar online. Abra o app e clique em "Ficar online".',
