@@ -528,3 +528,18 @@ authRoutes.post('/push-subscription/reactivate', authMiddleware, async (c) => {
   return c.json({ success: true })
 })
 
+// DELETE /api/auth/push-subscription/clear (Deletar todas as subscriptions do usuário - para corrigir chaves corrompidas)
+authRoutes.delete('/push-subscription/clear', authMiddleware, async (c) => {
+  const db = getDb(c.env.DB)
+  const user = c.get('jwtPayload')
+
+  console.log('[auth] Deletando todas as subscriptions para userId:', user.sub)
+
+  await db.delete(pushSubscriptions)
+    .where(eq(pushSubscriptions.userId, user.sub))
+
+  console.log('[auth] Subscriptions deletadas')
+
+  return c.json({ success: true })
+})
+
