@@ -15,18 +15,22 @@ async function sendToSubscriptions(
   payload: PushPayload,
   vapid: VapidConfig
 ): Promise<number> {
+  console.log(`[push] Enviando para ${subscriptions.length} subscriptions`)
   let sent = 0
   for (const sub of subscriptions) {
     const ok = await sendWebPush({ endpoint: sub.endpoint, p256dhKey: sub.p256dhKey, authKey: sub.authKey }, payload, vapid)
     if (ok) {
       sent++
+      console.log(`[push] ✓ Enviado para ${sub.endpoint.substring(0, 50)}...`)
     } else {
+      console.log(`[push] ✗ Falha ao enviar para ${sub.endpoint.substring(0, 50)}...`)
       // Se falhou, desativar subscription (endpoint pode ter expirado)
       await db.update(pushSubscriptions)
         .set({ active: false, updatedAt: new Date().toISOString() })
         .where(eq(pushSubscriptions.id, sub.id))
     }
   }
+  console.log(`[push] Total enviado: ${sent}/${subscriptions.length}`)
   return sent
 }
 
@@ -131,13 +135,28 @@ export async function notifyDriver(
   payload: PushPayload,
   env: { VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }
 ) {
+  console.log(`[push] notifyDriver chamado para userId: ${driverUserId}`)
+  console.log(`[push] Payload:`, payload)
+  
   const vapid = getVapid(env)
-  if (!vapid) return { notified: 0 }
+  if (!vapid) {
+    console.log('[push] VAPID não configurado - pulando envio')
+    return { notified: 0 }
+  }
+  
   try {
     const subs = await db.select().from(pushSubscriptions)
       .where(and(eq(pushSubscriptions.userId, driverUserId), eq(pushSubscriptions.active, true)))
       .all()
+    
+    console.log(`[push] ${subs.length} subscriptions ativas encontradas para userId: ${driverUserId}`)
+    
+    if (subs.length === 0) {
+      console.log('[push] Nenhuma subscription ativa encontrada')
+    }
+    
     const notified = await sendToSubscriptions(db, subs, payload, vapid)
+    console.log(`[push] notifyDriver concluído: ${notified} notificações enviadas`)
     return { notified }
   } catch (err) {
     console.error('[push] Erro ao notificar motorista:', err)

@@ -389,6 +389,7 @@ driversRoutes.patch('/:id/availability', async (c) => {
   
   // Enviar notificação ao motorista sobre mudança de status
   if (oldStatus !== status) {
+    console.log(`[drivers] Motorista ${driver.id} mudou status de ${oldStatus} para ${status}`)
     const { notifyDriver } = await import('../lib/push')
     const payload = {
       title: status === 'online' ? '🟢 Você está ONLINE' : '🔴 Você está OFFLINE',
@@ -400,7 +401,9 @@ driversRoutes.patch('/:id/availability', async (c) => {
       requireInteraction: false,
       data: { action: 'status_change', status }
     }
-    await notifyDriver(db, driver.userId, payload, c.env)
+    console.log(`[drivers] Enviando notificação de status para userId: ${driver.userId}`)
+    const result = await notifyDriver(db, driver.userId, payload, c.env)
+    console.log(`[drivers] Resultado da notificação:`, result)
   }
   
   return c.json({ success: true, status })
