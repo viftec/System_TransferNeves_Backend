@@ -512,3 +512,19 @@ authRoutes.delete('/push-subscription', authMiddleware, async (c) => {
   return c.json({ success: true })
 })
 
+// POST /api/auth/push-subscription/reactivate (Reativar todas as subscriptions do usuário)
+authRoutes.post('/push-subscription/reactivate', authMiddleware, async (c) => {
+  const db = getDb(c.env.DB)
+  const user = c.get('jwtPayload')
+
+  console.log('[auth] Reativando subscriptions para userId:', user.sub)
+
+  const result = await db.update(pushSubscriptions)
+    .set({ active: true, updatedAt: new Date().toISOString() })
+    .where(eq(pushSubscriptions.userId, user.sub))
+
+  console.log('[auth] Subscriptions reativadas')
+
+  return c.json({ success: true })
+})
+
