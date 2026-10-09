@@ -528,18 +528,56 @@ authRoutes.post('/push-subscription/reactivate', authMiddleware, async (c) => {
   return c.json({ success: true })
 })
 
-// DELETE /api/auth/push-subscription/clear (Deletar todas as subscriptions do usuário - para corrigir chaves corrompidas)
-authRoutes.delete('/push-subscription/clear', authMiddleware, async (c) => {
+// POST /api/auth/push-subscription/cleanup (Deletar subscriptions com chaves inválidas)
+authRoutes.post('/push-subscription/cleanup', authMiddleware, async (c) => {
   const db = getDb(c.env.DB)
   const user = c.get('jwtPayload')
 
-  console.log('[auth] Deletando todas as subscriptions para userId:', user.sub)
+  console.log('[auth] Limpando subscriptions com chaves inválidas para userId:', user.sub)
 
-  await db.delete(pushSubscriptions)
+  // Buscar todas as subscriptions do usuário
+  const allSubs = await db.select()
+    .from(pushSubscriptions)
     .where(eq(pushSubscriptions.userId, user.sub))
 
-  console.log('[auth] Subscriptions deletadas')
+  let deletedCount = 0
 
-  return c.json({ success: true })
+  for (const sub of allSubs) {
+    // Validar se as chaves são base64 válido
+    try {
+      // Tenta decodificar as chaves para verificar se são válidas
+      const isValidBase64 = (str: string) => {
+        try {
+          const cleaned = str.replace(/[^a-zA-Z0-9\-_]/g, '')
+          const base64 = cleaned.replace(/-/g, '+').replace(/_/g, '/')
+          const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=')
+          atob(padded)
+          return true
+        } catch {
+          return false
+        }
+      }
+
+      const p256Valid = isValidBase64(sub.p256dhKey)
+      const authValid = isValidBase64(sub.authKey)
+
+      if (!p256Valid || !authValid) {
+        console.log('[auth] Deletando subscription com chaves inválidas:', sub.id)
+        await db.delete(pushSubscriptions)
+          .where(eq(pushSubscriptions.id, sub.id))
+        deletedCount++
+      }
+    } catch (e) {
+      console.log('[auth] Erro ao validar subscription:', sub.id, e)
+      // Se der erro na validação, deleta por segurança
+      await db.delete(pushSubscriptions)
+        .where(eq(pushSubscriptions.id, sub.id))
+      deletedCount++
+    }
+  }
+
+  console.log('[auth] Cleanup concluído:', deletedCount, 'subscriptions deletadas')
+
+  return c.json({ success: true, deletedCount })
 })
 

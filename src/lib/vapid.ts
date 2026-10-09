@@ -17,12 +17,25 @@
  */
 
 function base64UrlDecode(base64url: string): Uint8Array<ArrayBuffer> {
-  const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/')
+  // Validar entrada
+  if (!base64url || typeof base64url !== 'string') {
+    throw new Error('base64UrlDecode: entrada inválida')
+  }
+
+  // Remover caracteres que não são base64URL válidos
+  const cleaned = base64url.replace(/[^a-zA-Z0-9\-_]/g, '')
+  
+  const base64 = cleaned.replace(/-/g, '+').replace(/_/g, '/')
   const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=')
-  const binary = atob(padded)
-  const arr = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i)
-  return arr as Uint8Array<ArrayBuffer>
+  
+  try {
+    const binary = atob(padded)
+    const arr = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i)
+    return arr as Uint8Array<ArrayBuffer>
+  } catch (err) {
+    throw new Error(`base64UrlDecode falhou: ${err}. Input: "${base64url}"`)
+  }
 }
 
 function base64UrlEncode(buffer: ArrayBuffer | Uint8Array): string {
