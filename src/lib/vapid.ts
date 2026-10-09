@@ -84,7 +84,12 @@ async function createVapidJwt(subject: string, audience: string, privateKeyBase6
   const keyLength = privateKeyBase64.length
 
   // Remover espaços, aspas e quebras de linha se existirem (comum em arquivos .env)
-  const cleanedKey = privateKeyBase64.trim().replace(/^["']|["']$/g, '').replace(/\s+/g, '')
+  // Também remover caracteres que definitivamente não são Base64URL (comum em erros de cópia)
+  const cleanedKey = privateKeyBase64
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[^a-zA-Z0-9\-_]/g, '') // Remove caracteres que não são Base64URL
 
   if (cleanedKey !== privateKeyBase64) {
     console.warn(`[vapid] VAPID_PRIVATE_KEY foi limpa: comprimento original ${keyLength}, após limpeza ${cleanedKey.length}`)
