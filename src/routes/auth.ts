@@ -15,7 +15,7 @@ export const authRoutes = new Hono<{ Bindings: Env }>()
 // POST /api/auth/login
 authRoutes.post('/login', async (c) => {
   try {
-    const { email, password } = await c.req.json()
+    const { email, password, rememberMe } = await c.req.json()
 
     if (!email || !password) {
       return c.json({ error: 'Email e senha são obrigatórios' }, 400)
@@ -67,11 +67,11 @@ authRoutes.post('/login', async (c) => {
       }
     }
 
-    // Gera JWT (expira em 2 horas)
+    // Gera JWT (expira em 90 dias com manter conectado ativo, ou 12h se desmarcado)
     const token = await signToken(
       { sub: user.id, email: user.email, role: user.role as 'admin' | 'driver' },
       secret,
-      '2h'
+      rememberMe === false ? '12h' : '90d'
     )
 
     return c.json({
