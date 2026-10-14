@@ -91,7 +91,8 @@ export async function notifyEligibleDrivers(
     scheduledAt: string; value: number; type: string; serviceCities?: string[]
   },
   allowedVehicleTypes: string[] | null,
-  env: { VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }
+  env: { VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string },
+  excludeDriverId?: string
 ) {
   const vapid = getVapid(env)
   if (!vapid) { console.warn('[push] VAPID não configurado — pulando envio'); return { notified: 0 } }
@@ -111,6 +112,7 @@ export async function notifyEligibleDrivers(
     }
 
     const filtered = eligibleDrivers.filter(({ driver }) => {
+      if (excludeDriverId && driver.id === excludeDriverId) return false
       if (!driver.cities) return false
       try {
         const cities = JSON.parse(driver.cities) as string[]
@@ -132,6 +134,7 @@ export async function notifyEligibleDrivers(
       body: `${rideData.originCity} → ${rideData.destCity} · ${new Date(rideData.scheduledAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
       icon: '/apple-icon.png',
       tag: `new-ride-${rideData.rideId}`,
+      sound: true,
       requireInteraction: true,
       data: { rideId: rideData.rideId, code: rideData.code, action: 'new_ride' },
       actions: [{ action: 'view', title: 'Ver corrida' }, { action: 'close', title: 'Ignorar' }],

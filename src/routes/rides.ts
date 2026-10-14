@@ -78,7 +78,17 @@ ridesRoutes.get('/', async (c) => {
   
   if (user.role === 'driver') {
     const driver = await db.select().from(drivers).where(eq(drivers.userId, user.sub)).get()
-    if (!driver) return c.json({ rides: [] })
+    if (!driver) return c.json({ rides: [], driverStatus: null })
+    
+    // Motorista pendente (aguardando aprovação do admin) — não pode ver corridas
+    if (driver.status === 'pending') {
+      return c.json({ rides: [], driverStatus: 'pending' })
+    }
+    
+    // Motorista suspenso — não pode ver corridas (não deveria chegar aqui pois login bloqueia, mas por segurança)
+    if (driver.status === 'suspended') {
+      return c.json({ rides: [], driverStatus: 'suspended' })
+    }
 
     // Filter by driver's cities if cities field exists
     if (driver.cities) {
@@ -363,13 +373,14 @@ ridesRoutes.post('/:id/cancel-driver', async (c) => {
           body: `O motorista cancelou a corrida ${ride.code}. A corrida voltou a ficar disponível.`,
           icon: '/apple-icon.png',
           tag: `driver-cancel-${id}`,
+          sound: true,
           requireInteraction: true,
           data: { rideId: id, action: 'driver_cancelled' },
         },
         c.env
       )
 
-      // Re-notificar motoristas elegíveis sobre a corrida disponível novamente
+      // Re-notificar motoristas elegíveis sobre a corrida disponível novamente (excluindo quem acabou de cancelar)
       await notifyEligibleDrivers(
         db,
         {
@@ -383,7 +394,8 @@ ridesRoutes.post('/:id/cancel-driver', async (c) => {
           serviceCities: (() => { try { return ride.serviceCities ? JSON.parse(ride.serviceCities) : undefined } catch { return undefined } })(),
         },
         null, // sem filtro de veículo
-        c.env
+        c.env,
+        driver.id // excluir o próprio motorista que acabou de cancelar
       )
     })().catch(e => console.error('Error notifying cancellation:', e))
   )
@@ -762,6 +774,27 @@ ridesRoutes.post('/:id/accept', async (c) => {
     console.error('[rides] Falha ao registrar evento de aceitação (não-crítico):', eventErr)
   }
 
+  // Notificar admins sobre a corrida aceita pelo motorista
+  c.executionCtx.waitUntil(
+    (async () => {
+      const driverUser = await db.select({ name: users.name }).from(users).where(eq(users.id, user.sub)).get()
+      const driverName = driverUser?.name || 'Motorista'
+      await notifyAdmins(
+        db,
+        {
+          title: '✅ Corrida Aceita!',
+          body: `${driverName} aceitou a corrida ${updatedRide.code || id.slice(0, 8)} (${updatedRide.originCity} → ${updatedRide.destCity}).`,
+          icon: '/apple-icon.png',
+          tag: `ride-accepted-${id}`,
+          sound: true,
+          requireInteraction: true,
+          data: { rideId: id, action: 'ride_accepted', driverName },
+        },
+        c.env
+      )
+    })().catch(e => console.error('Error notifying admins about accepted ride:', e))
+  )
+
   return c.json({ success: true, message: 'Corrida aceita com sucesso' })
 })
 
@@ -831,6 +864,45 @@ ridesRoutes.patch('/:id/driver-status', zValidator('json', z.object({
   } catch (eventErr) {
     console.error('[rides] Falha ao registrar evento de status (não-crítico):', eventErr)
   }
+
+  // Notificar admins sobre o início ou conclusão da corrida pelo motorista
+  c.executionCtx.waitUntil(
+    (async () => {
+      const driverUser = await db.select({ name: users.name }).from(users).where(eq(users.id, user.sub)).get()
+      const driverName = driverUser?.name || 'Motorista'
+      const rideCode = ride.code || id.slice(0, 8)
+
+      if (status === 'andamento') {
+        await notifyAdmins(
+          db,
+          {
+            title: '🚗 Corrida Iniciada!',
+            body: `${driverName} iniciou a corrida ${rideCode} (${ride.originCity} → ${ride.destCity}).`,
+            icon: '/apple-icon.png',
+            tag: `ride-started-${id}`,
+            sound: true,
+            requireInteraction: true,
+            data: { rideId: id, action: 'ride_started', driverName },
+          },
+          c.env
+        )
+      } else if (status === 'concluida') {
+        await notifyAdmins(
+          db,
+          {
+            title: '🏁 Corrida Concluída!',
+            body: `${driverName} concluiu a corrida ${rideCode} (${ride.originCity} → ${ride.destCity}).`,
+            icon: '/apple-icon.png',
+            tag: `ride-completed-${id}`,
+            sound: true,
+            requireInteraction: true,
+            data: { rideId: id, action: 'ride_completed', driverName },
+          },
+          c.env
+        )
+      }
+    })().catch(e => console.error('Error notifying admins about driver status change:', e))
+  )
 
   return c.json({ success: true, status })
 })

@@ -31,8 +31,20 @@ authRoutes.post('/login', async (c) => {
       return c.json({ error: 'Credenciais inválidas' }, 401)
     }
 
-    if (!user.active || !user.emailVerified) {
-      return c.json({ error: 'Sua conta ainda não foi verificada. Verifique seu e-mail para ativar sua conta.' }, 403)
+    // Estágio 1: E-mail não verificado — bloqueia totalmente o login
+    if (!user.emailVerified) {
+      return c.json({ 
+        error: 'Verifique seu e-mail antes de fazer login. Acesse o link enviado para ativar sua conta.',
+        code: 'EMAIL_NOT_VERIFIED'
+      }, 403)
+    }
+
+    // Conta desativada (suspenso pelo admin via users.active)
+    if (!user.active) {
+      return c.json({ 
+        error: 'Sua conta foi suspensa. Entre em contato com a administração.',
+        code: 'ACCOUNT_SUSPENDED'
+      }, 403)
     }
 
     // Verifica senha
@@ -41,18 +53,26 @@ authRoutes.post('/login', async (c) => {
       return c.json({ error: 'Credenciais inválidas' }, 401)
     }
 
-    // Gera JWT (expira em 2 horas conforme solicitado)
+    // Se for motorista, busca o perfil completo
+    let driverProfile = null
+    if (user.role === 'driver') {
+      driverProfile = await db.select().from(drivers).where(eq(drivers.userId, user.id)).get()
+      
+      // Estágio 4: Motorista suspenso — bloqueia login
+      if (driverProfile?.status === 'suspended') {
+        return c.json({
+          error: 'Sua conta de motorista está suspensa. Entre em contato com a administração.',
+          code: 'DRIVER_SUSPENDED'
+        }, 403)
+      }
+    }
+
+    // Gera JWT (expira em 2 horas)
     const token = await signToken(
       { sub: user.id, email: user.email, role: user.role as 'admin' | 'driver' },
       secret,
       '2h'
     )
-
-    // Se for motorista, busca o perfil completo
-    let driverProfile = null
-    if (user.role === 'driver') {
-      driverProfile = await db.select().from(drivers).where(eq(drivers.userId, user.id)).get()
-    }
 
     return c.json({
       token,

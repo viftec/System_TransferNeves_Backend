@@ -193,6 +193,7 @@ async function runScheduled(env: Env) {
               body: `A corrida ${ride.code} (${ride.originCity} → ${ride.destCity}) foi cancelada pois não foi iniciada em 1 hora. Entre em contato com o suporte.`,
               icon: '/apple-icon.png',
               tag: `cancelled-${ride.id}`,
+              sound: true,
               requireInteraction: true,
               data: { rideId: ride.id, action: 'cancelled' },
             }, env)
@@ -203,6 +204,7 @@ async function runScheduled(env: Env) {
               body: `${driverUser.name} aceitou a corrida ${ride.code} mas não iniciou em 1 hora. Entre em contato.`,
               icon: '/apple-icon.png',
               tag: `admin-cancelled-${ride.id}`,
+              sound: true,
               requireInteraction: true,
               data: { rideId: ride.id, driverName: driverUser.name, action: 'admin_alert' },
             }, env)
@@ -234,8 +236,9 @@ async function runScheduled(env: Env) {
     stats.proofDeleted = await hardDeleteExpiredProofs(env, db, now)
 
     // ── 7. Notificar motoristas offline a cada 3 horas (0:00, 3:00, 6:00, ...) ─────
+    // Executa apenas no minuto zero da hora para não disparar 60 vezes a cada 1 minuto
     const hour = now.getHours()
-    if (hour % 3 === 0) { // Roda a cada 3 horas
+    if (hour % 3 === 0 && now.getMinutes() === 0) {
       const offlineDrivers = await db.select({ driver: drivers, user: users })
         .from(drivers)
         .innerJoin(users, eq(drivers.userId, users.id))
