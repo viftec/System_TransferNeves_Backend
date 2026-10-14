@@ -256,7 +256,8 @@ async function runScheduled(env: Env) {
           body: 'Para receber corridas, você precisa ficar online. Abra o app e clique em "Ficar online".',
           icon: '/apple-icon.png',
           tag: 'offline-reminder',
-          requireInteraction: false,
+          sound: true,
+          requireInteraction: true,
           data: { action: 'go_online' },
         }, env)
       }

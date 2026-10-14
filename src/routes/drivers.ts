@@ -406,6 +406,7 @@ driversRoutes.patch('/:id/availability', async (c) => {
         : 'Você não está mais disponível para receber corridas.',
       icon: '/apple-icon.png',
       tag: 'status-change',
+      sound: true,
       requireInteraction: true,
       data: { action: 'status_change', status }
     }
@@ -590,7 +591,8 @@ driversRoutes.post('/me/push/test', async (c) => {
     body: 'Este é um teste do sistema de notificações. Se você recebeu esta mensagem, o push está funcionando corretamente.',
     icon: '/apple-icon.png',
     tag: 'push-test',
-    requireInteraction: false,
+    sound: true,
+    requireInteraction: true,
     data: { action: 'push_test', timestamp: new Date().toISOString() }
   }
 

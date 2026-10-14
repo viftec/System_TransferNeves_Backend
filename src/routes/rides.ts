@@ -644,7 +644,8 @@ ridesRoutes.patch('/:id/status', adminOnly, zValidator('json', z.object({
             body: `A corrida ${existing.code || id.slice(0, 8)} foi iniciada pelo motorista.`,
             icon: '/apple-icon.png',
             tag: `ride-started-${id}`,
-            requireInteraction: false,
+            sound: true,
+            requireInteraction: true,
             data: { rideId: id, action: 'ride_started' },
           },
           c.env
