@@ -440,6 +440,8 @@ const createRideSchema = z.object({
   serviceCities: z.array(z.string()).optional(),
   
   requiresPhoto: z.boolean().optional(),
+  isRoundTrip: z.boolean().optional(),
+  paymentDate: z.string().max(30).nullable().optional(),
 })
 
 // POST /api/rides — cria corrida (admin only)
@@ -526,6 +528,8 @@ ridesRoutes.post('/', adminOnly, zValidator('json', createRideSchema), async (c)
       
       // Configurações da corrida
       requiresPhoto: body.requiresPhoto ?? false,
+      isRoundTrip: body.isRoundTrip ?? false,
+      paymentDate: body.paymentDate || null,
     }).returning().get()
 
     // Registra evento de criação — não-crítico
@@ -1216,6 +1220,8 @@ ridesRoutes.put('/:id', adminOnly, zValidator('json', createRideSchema), async (
       
       // Configurações da corrida
       requiresPhoto: body.requiresPhoto ?? false,
+      isRoundTrip: body.isRoundTrip ?? false,
+      paymentDate: body.paymentDate || null,
       
       status: existingRide.status === 'editando' ? 'disponivel' : existingRide.status,
       updatedAt: new Date().toISOString()

@@ -104,6 +104,7 @@ const createDriverSchema = z.object({
     state: z.string().max(2).optional(),
     cep: z.string().max(10).optional(),
     cities: z.array(z.string()).optional(),
+    pixKey: z.string().max(150).optional(),
   }),
   vehicles: z.array(z.object({
     type: z.enum(['sedan', 'suv', 'hatch', 'van', 'caminhonete', 'caminhao']),
@@ -154,6 +155,7 @@ driversRoutes.post('/', adminOnly, zValidator('json', createDriverSchema), async
     state: driverData.state,
     cep: driverData.cep,
     cities: driverData.cities ? JSON.stringify(driverData.cities) : null,
+    pixKey: driverData.pixKey || null,
     status: 'approved',
   }).returning().get()
 
@@ -268,6 +270,7 @@ const editDriverSchema = z.object({
     state: z.string().max(2).optional(),
     cep: z.string().max(10).optional(),
     cities: z.array(z.string()).optional(),
+    pixKey: z.string().max(150).optional(),
   }),
   vehicles: z.array(z.object({
     type: z.string(),
@@ -322,6 +325,7 @@ driversRoutes.put('/:id', adminOnly, zValidator('json', editDriverSchema), async
     state: driverData.state || null,
     cep: driverData.cep || null,
     cities: driverData.cities ? JSON.stringify(driverData.cities) : null,
+    pixKey: driverData.pixKey || null,
   }).where(eq(drivers.id, id))
 
   // Update vehicles: delete all old ones and reinsert the new list

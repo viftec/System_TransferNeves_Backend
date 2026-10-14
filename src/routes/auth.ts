@@ -274,7 +274,7 @@ authRoutes.get('/check-email', async (c) => {
 // POST /api/auth/register-driver
 authRoutes.post('/register-driver', async (c) => {
   try {
-    const { name, email, phone, password, cpf, cnh, cnhExpiry, street, number, complement, neighborhood, city, state, cep, cities, vehicles } = await c.req.json()
+    const { name, email, phone, password, cpf, cnh, cnhExpiry, street, number, complement, neighborhood, city, state, cep, cities, vehicles, pixKey } = await c.req.json()
 
     if (!name || !email || !phone || !password || !cpf || !cnh || !street || !city) {
       return c.json({ error: 'Todos os campos são obrigatórios' }, 400)
@@ -358,6 +358,7 @@ authRoutes.post('/register-driver', async (c) => {
       cities: cities && cities.length > 0 ? JSON.stringify(cities) : null,
       status: 'pending',
       cpf: cleanCPF,
+      pixKey: pixKey ? String(pixKey).trim() : null,
     })
 
     // Create Vehicles

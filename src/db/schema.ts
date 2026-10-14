@@ -44,6 +44,7 @@ export const drivers = sqliteTable('drivers', {
   totalRides:       integer('total_rides').notNull().default(0),
   avatarKey:        text('avatar_key'),  // chave no R2
   preferredVehicleType: text('preferred_vehicle_type'), // Tipo de veículo que o motorista prefere usar
+  pixKey:           text('pix_key'), // Chave PIX para recebimento de pagamentos
   createdAt:        text('created_at').notNull().default(sql`(datetime('now'))`),
   updatedAt:        text('updated_at').notNull().default(sql`(datetime('now'))`),
 })
@@ -142,6 +143,8 @@ export const rides = sqliteTable('rides', {
   status:           text('status', { enum: ['disponivel', 'aceita', 'andamento', 'concluida', 'cancelada', 'sem_motoristas', 'editando', 'nao_iniciada'] }).notNull().default('disponivel'),
   notes:            text('notes'),
   isRecurring:      integer('is_recurring', { mode: 'boolean' }).notNull().default(false),
+  isRoundTrip:      integer('is_round_trip', { mode: 'boolean' }).notNull().default(false),
+  paymentDate:      text('payment_date'),
   requiresPhoto:    integer('requires_photo', { mode: 'boolean' }).notNull().default(false),
   isUrgent:         integer('is_urgent', { mode: 'boolean' }).notNull().default(false),
   allowCancellation: integer('allow_cancellation', { mode: 'boolean' }).notNull().default(true),
