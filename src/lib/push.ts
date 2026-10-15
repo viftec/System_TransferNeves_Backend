@@ -1,5 +1,5 @@
 import { pushSubscriptions, drivers, vehicles, users } from '../db/schema'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, or } from 'drizzle-orm'
 import type { DB } from '../db'
 import { sendWebPush, type VapidConfig, type PushPayload, type PushSendResult } from './vapid'
 
@@ -83,6 +83,65 @@ async function getAdminSubscriptions(db: DB) {
   return subs.filter(s => adminIds.includes(s.userId))
 }
 
+function cleanCity(str: string): string {
+  if (!str) return ''
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s*-\s*[a-z]{2}$/i, '')
+    .replace(/\s*\/\s*[a-z]{2}$/i, '')
+    .trim()
+}
+
+function doesDriverServeCity(
+  driverCitiesJson: string | null | undefined,
+  driverCity: string | null | undefined,
+  originCity: string,
+  serviceCities?: string[]
+): boolean {
+  const normOrigin = cleanCity(originCity)
+  const normServiceCities = (serviceCities || []).map(cleanCity).filter(Boolean)
+
+  let driverCities: string[] = []
+  if (driverCitiesJson) {
+    try {
+      const parsed = JSON.parse(driverCitiesJson)
+      if (Array.isArray(parsed)) {
+        driverCities = parsed.map(c => cleanCity(String(c))).filter(Boolean)
+      }
+    } catch {}
+  }
+
+  // Se não tem cidades cadastradas em driver.cities, usa a cidade do endereço residencial
+  if (driverCities.length === 0 && driverCity) {
+    driverCities = [cleanCity(driverCity)].filter(Boolean)
+  }
+
+  // Se o motorista não tem nenhuma cidade cadastrada, atende todas (não descartar!)
+  if (driverCities.length === 0) {
+    return true
+  }
+
+  // Se a corrida tem cidades de atendimento autorizadas
+  if (normServiceCities.length > 0) {
+    const matchesService = normServiceCities.some(sc =>
+      driverCities.some(dc => dc === sc || dc.includes(sc) || sc.includes(dc))
+    )
+    if (matchesService) return true
+  }
+
+  // Comparar com a cidade de origem
+  if (normOrigin) {
+    const matchesOrigin = driverCities.some(dc =>
+      dc === normOrigin || dc.includes(normOrigin) || normOrigin.includes(dc)
+    )
+    if (matchesOrigin) return true
+  }
+
+  return false
+}
+
 // ─── Notificar motoristas elegíveis sobre nova corrida ────────────────────────
 export async function notifyEligibleDrivers(
   db: DB,
@@ -98,51 +157,113 @@ export async function notifyEligibleDrivers(
   if (!vapid) { console.warn('[push] VAPID não configurado — pulando envio'); return { notified: 0 } }
 
   try {
-    const eligibleDrivers = await db.select({ driver: drivers, subscription: pushSubscriptions })
-      .from(drivers)
-      .innerJoin(pushSubscriptions, eq(drivers.id, pushSubscriptions.driverId))
-      .where(and(eq(drivers.status, 'online'), eq(pushSubscriptions.active, true)))
+    // 1. Buscar motoristas aptos (status 'online' ou 'approved')
+    const allDrivers = await db.select().from(drivers)
+      .where(or(eq(drivers.status, 'online'), eq(drivers.status, 'approved')))
       .all()
 
+    console.log(`[push] Total de motoristas cadastrados e aptos (online/approved): ${allDrivers.length}`)
+
+    // 2. Buscar veículos de todos os motoristas
     const allVehicles = await db.select({ driverId: vehicles.driverId, type: vehicles.type }).from(vehicles).all()
     const vehiclesByDriver: Record<string, string[]> = {}
     for (const v of allVehicles) {
       if (!vehiclesByDriver[v.driverId]) vehiclesByDriver[v.driverId] = []
-      if (v.type) vehiclesByDriver[v.driverId].push(v.type)
+      if (v.type) vehiclesByDriver[v.driverId].push(v.type.toLowerCase().trim())
     }
 
-    const filtered = eligibleDrivers.filter(({ driver }) => {
+    // 3. Filtrar motoristas elegíveis por cidade e veículo
+    const normAllowedVehicles = allowedVehicleTypes && allowedVehicleTypes.length > 0
+      ? allowedVehicleTypes.map(t => t.toLowerCase().trim())
+      : null
+
+    const eligibleDrivers = allDrivers.filter((driver) => {
       if (excludeDriverId && driver.id === excludeDriverId) return false
-      if (!driver.cities) return false
-      try {
-        const cities = JSON.parse(driver.cities) as string[]
-        if (rideData.serviceCities && rideData.serviceCities.length > 0) {
-          if (!rideData.serviceCities.some(c => cities.includes(c))) return false
-        } else {
-          if (!cities.includes(rideData.originCity)) return false
-        }
-      } catch { return false }
-      if (allowedVehicleTypes?.length) {
-        const driverTypes = vehiclesByDriver[driver.id] ?? []
-        if (!driverTypes.some(t => allowedVehicleTypes.includes(t))) return false
+
+      // Verificar cidade
+      const servesCity = doesDriverServeCity(driver.cities, driver.city, rideData.originCity, rideData.serviceCities)
+      if (!servesCity) {
+        console.log(`[push] Motorista ${driver.id} descartado por cidade (origem: ${rideData.originCity})`)
+        return false
       }
+
+      // Verificar veículo (se especificado)
+      if (normAllowedVehicles) {
+        const driverTypes = vehiclesByDriver[driver.id] ?? []
+        if (driver.preferredVehicleType) {
+          driverTypes.push(driver.preferredVehicleType.toLowerCase().trim())
+        }
+        if (driverTypes.length > 0 && !driverTypes.some(t => normAllowedVehicles.includes(t))) {
+          console.log(`[push] Motorista ${driver.id} descartado por veículo incompatível`)
+          return false
+        }
+      }
+
       return true
     })
 
+    console.log(`[push] ${eligibleDrivers.length} motoristas passaram no filtro de elegibilidade`)
+
+    if (eligibleDrivers.length === 0) {
+      return { notified: 0 }
+    }
+
+    // 4. Buscar todas as push subscriptions ativas
+    const activeSubs = await db.select().from(pushSubscriptions)
+      .where(eq(pushSubscriptions.active, true))
+      .all()
+
+    console.log(`[push] Total de subscriptions ativas no banco: ${activeSubs.length}`)
+
+    // 5. Vincular subscriptions aos motoristas elegíveis (por driverId OU userId)
+    const seenEndpoints = new Set<string>()
+    const targetSubs: Array<{ id: string; endpoint: string; p256dhKey: string; authKey: string }> = []
+
+    for (const driver of eligibleDrivers) {
+      const driverSubs = activeSubs.filter(s => s.driverId === driver.id || s.userId === driver.userId)
+      for (const sub of driverSubs) {
+        if (!seenEndpoints.has(sub.endpoint)) {
+          seenEndpoints.add(sub.endpoint)
+          targetSubs.push({
+            id: sub.id,
+            endpoint: sub.endpoint,
+            p256dhKey: sub.p256dhKey,
+            authKey: sub.authKey,
+          })
+        }
+      }
+    }
+
+    console.log(`[push] Disparando push para ${targetSubs.length} subscriptions dos motoristas elegíveis`)
+
+    if (targetSubs.length === 0) {
+      console.warn('[push] Nenhum motorista elegível possui assinatura push ativa registrada')
+      return { notified: 0 }
+    }
+
     const payload: PushPayload = {
-      title: '🚗 Nova corrida disponível!',
-      body: `${rideData.originCity} → ${rideData.destCity} · ${new Date(rideData.scheduledAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
-      icon: '/apple-icon.png',
+      title: '🚨 Nova Corrida Disponível!',
+      body: `${rideData.originCity} → ${rideData.destCity} · ${new Date(rideData.scheduledAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}\nToque para ver detalhes e aceitar.`,
+      icon: '/icon-192x192.png',
+      badge: '/icon-32x32.png',
       tag: `new-ride-${rideData.rideId}`,
       sound: true,
       requireInteraction: true,
-      data: { rideId: rideData.rideId, code: rideData.code, action: 'new_ride' },
-      actions: [{ action: 'view', title: 'Ver corrida' }, { action: 'close', title: 'Ignorar' }],
+      data: {
+        rideId: rideData.rideId,
+        code: rideData.code,
+        action: 'new_ride',
+        url: '/driver',
+        timestamp: Date.now(),
+      },
+      actions: [
+        { action: 'view', title: 'Ver corrida' },
+        { action: 'close', title: 'Ignorar' }
+      ],
     }
 
-    const subs = filtered.map(({ subscription: s }) => ({ id: s.id, endpoint: s.endpoint, p256dhKey: s.p256dhKey, authKey: s.authKey }))
-    const notified = await sendToSubscriptions(db, subs, payload, vapid)
-    console.log(`[push] ${notified}/${filtered.length} motoristas notificados sobre nova corrida`)
+    const notified = await sendToSubscriptions(db, targetSubs, payload, vapid)
+    console.log(`[push] ${notified}/${targetSubs.length} notificações de nova corrida enviadas`)
     return { notified }
   } catch (err) {
     console.error('[push] Erro ao notificar motoristas:', err)
@@ -169,15 +290,14 @@ export async function notifyAdmins(
   }
 }
 
-// ─── Notificar motorista específico (por userId) ───────────────────────────────
+// ─── Notificar motorista específico (por userId ou driverId) ───────────────────
 export async function notifyDriver(
   db: DB,
-  driverUserId: string,
+  driverIdentifier: string,
   payload: PushPayload,
   env: { VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }
 ) {
-  console.log(`[push] notifyDriver chamado para userId: ${driverUserId}`)
-  console.log(`[push] Payload:`, payload)
+  console.log(`[push] notifyDriver chamado para: ${driverIdentifier}`)
 
   const vapid = getVapid(env)
   if (!vapid) {
@@ -186,25 +306,25 @@ export async function notifyDriver(
   }
 
   try {
-    // Primeiro, buscar todas as subscriptions deste usuário (ativo ou não)
+    // Buscar perfil do motorista para descobrir userId e driverId
+    const driver = await db.select().from(drivers)
+      .where(or(eq(drivers.userId, driverIdentifier), eq(drivers.id, driverIdentifier)))
+      .get()
+
+    const userId = driver ? driver.userId : driverIdentifier
+    const driverId = driver ? driver.id : null
+
     const allSubs = await db.select().from(pushSubscriptions)
-      .where(eq(pushSubscriptions.userId, driverUserId))
+      .where(eq(pushSubscriptions.active, true))
       .all()
 
-    console.log(`[push] Total de subscriptions (ativas + inativas) para userId ${driverUserId}:`, allSubs.length)
-    allSubs.forEach(s => {
-      console.log(`[push] - Subscription id: ${s.id}, active: ${s.active}, driverId: ${s.driverId}`)
-    })
+    const subs = allSubs.filter(s => s.userId === userId || (driverId && s.driverId === driverId))
 
-    // Agora buscar apenas as ativas
-    const subs = await db.select().from(pushSubscriptions)
-      .where(and(eq(pushSubscriptions.userId, driverUserId), eq(pushSubscriptions.active, true)))
-      .all()
-
-    console.log(`[push] ${subs.length} subscriptions ativas encontradas para userId: ${driverUserId}`)
+    console.log(`[push] ${subs.length} subscriptions ativas encontradas para ${driverIdentifier}`)
 
     if (subs.length === 0) {
       console.log('[push] Nenhuma subscription ativa encontrada')
+      return { notified: 0 }
     }
 
     const notified = await sendToSubscriptions(db, subs, payload, vapid)

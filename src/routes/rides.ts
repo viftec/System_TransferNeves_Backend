@@ -5,7 +5,7 @@ import { getDb } from '../db'
 import { rides, rideEvents, clients, drivers, vehicles, users, uploads } from '../db/schema'
 import { eq, desc, asc, and, like, isNull, or, sql } from 'drizzle-orm'
 import { authMiddleware, adminOnly, type Env } from '../middleware/auth'
-import { notifyEligibleDrivers, notifyAdmins } from '../lib/push'
+import { notifyEligibleDrivers, notifyAdmins, notifyDriver } from '../lib/push'
 import {
   proofExpiresAtFromCompletion,
   isProofDownloadAllowed,
@@ -557,22 +557,24 @@ ridesRoutes.post('/', adminOnly, zValidator('json', createRideSchema), async (c)
     }
 
     // Notificar motoristas elegíveis — não-crítico
-    try {
-      const allowedVehicleTypes = body.allowedVehicleTypes || null
-      const parsedServiceCities = body.serviceCities && body.serviceCities.length > 0 ? body.serviceCities : undefined
-      await notifyEligibleDrivers(db, {
-        rideId: ride.id,
-        code: ride.code,
-        originCity: ride.originCity,
-        destCity: ride.destCity,
-        scheduledAt: ride.scheduledAt || scheduledAt.toISOString(),
-        value: ride.value,
-        type: ride.type,
-        serviceCities: parsedServiceCities,
-      }, allowedVehicleTypes, c.env)
-    } catch (pushErr) {
-      console.error('[rides] Falha ao notificar motoristas (não-crítico):', pushErr)
-    }
+    c.executionCtx.waitUntil(
+      (async () => {
+        const allowedVehicleTypes = body.allowedVehicleTypes || null
+        const parsedServiceCities = body.serviceCities && body.serviceCities.length > 0 ? body.serviceCities : undefined
+        await notifyEligibleDrivers(db, {
+          rideId: ride.id,
+          code: ride.code,
+          originCity: ride.originCity,
+          destCity: ride.destCity,
+          scheduledAt: ride.scheduledAt || scheduledAt.toISOString(),
+          value: ride.value,
+          type: ride.type,
+          serviceCities: parsedServiceCities,
+        }, allowedVehicleTypes, c.env)
+      })().catch(pushErr => {
+        console.error('[rides] Falha ao notificar motoristas (não-crítico):', pushErr)
+      })
+    )
 
     return c.json({ ride }, 201)
   } catch (err: any) {
@@ -635,6 +637,50 @@ ridesRoutes.patch('/:id/status', adminOnly, zValidator('json', z.object({
     }
   } catch (eventErr) {
     console.error('[rides] Falha ao registrar evento de status (não-crítico):', eventErr)
+  }
+
+  // Se o status mudou para 'disponivel', notifica motoristas elegíveis
+  if (status === 'disponivel') {
+    c.executionCtx.waitUntil(
+      (async () => {
+        let allowedTypes: string[] | null = null
+        if (existing.allowedVehicleTypes) {
+          try { allowedTypes = JSON.parse(existing.allowedVehicleTypes) } catch {}
+        }
+        let parsedCities: string[] | undefined = undefined
+        if (existing.serviceCities) {
+          try { parsedCities = JSON.parse(existing.serviceCities) } catch {}
+        }
+        await notifyEligibleDrivers(db, {
+          rideId: id,
+          code: existing.code || '',
+          originCity: existing.originCity,
+          destCity: existing.destCity,
+          scheduledAt: existing.scheduledAt || `${existing.scheduledDate}T${existing.scheduledTime}:00-03:00`,
+          value: existing.value,
+          type: existing.type,
+          serviceCities: parsedCities,
+        }, allowedTypes, c.env)
+      })().catch(e => console.error('[rides] Erro ao notificar motoristas sobre corrida disponível:', e))
+    )
+  }
+
+  // Se o status mudou para 'cancelada' e a corrida tinha motorista, notifica o motorista
+  if (status === 'cancelada' && existing.driverId) {
+    c.executionCtx.waitUntil(
+      (async () => {
+        await notifyDriver(db, existing.driverId!, {
+          title: '⚠️ Corrida Cancelada!',
+          body: `A corrida ${existing.code || id.slice(0, 8)} (${existing.originCity} → ${existing.destCity}) foi cancelada pela administração.`,
+          icon: '/icon-192x192.png',
+          badge: '/icon-32x32.png',
+          tag: `admin-cancel-${id}`,
+          sound: true,
+          requireInteraction: true,
+          data: { rideId: id, action: 'admin_cancelled', url: '/driver' },
+        }, c.env)
+      })().catch(e => console.error('[rides] Erro ao notificar motorista sobre cancelamento:', e))
+    )
   }
 
   // Se iniciou a corrida (andamento), notifica os admins
@@ -1128,6 +1174,24 @@ ridesRoutes.delete('/:id', adminOnly, async (c) => {
   }
 
   
+  // Se a corrida tinha motorista atribuído e foi deletada, notifica o motorista
+  if (existing.driverId && ['aceita', 'andamento'].includes(existing.status)) {
+    c.executionCtx.waitUntil(
+      (async () => {
+        await notifyDriver(db, existing.driverId!, {
+          title: '⚠️ Corrida Cancelada!',
+          body: `A corrida ${existing.code || id.slice(0, 8)} (${existing.originCity} → ${existing.destCity}) foi cancelada pela administração.`,
+          icon: '/icon-192x192.png',
+          badge: '/icon-32x32.png',
+          tag: `admin-deleted-${id}`,
+          sound: true,
+          requireInteraction: true,
+          data: { rideId: id, action: 'admin_deleted', url: '/driver' },
+        }, c.env)
+      })().catch(e => console.error('[rides] Erro ao notificar motorista sobre exclusão da corrida:', e))
+    )
+  }
+
   return c.json({ success: true })
 })
 
@@ -1249,6 +1313,28 @@ ridesRoutes.put('/:id', adminOnly, zValidator('json', createRideSchema), async (
       }
     } catch (eventErr) {
       console.error('[rides] Falha ao registrar evento de edição (não-crítico):', eventErr)
+    }
+
+    // Se a corrida ficou como 'disponivel', notifica motoristas elegíveis
+    if (ride.status === 'disponivel') {
+      c.executionCtx.waitUntil(
+        (async () => {
+          const allowedVehicleTypes = body.allowedVehicleTypes || null
+          const parsedServiceCities = body.serviceCities && body.serviceCities.length > 0 ? body.serviceCities : undefined
+          await notifyEligibleDrivers(db, {
+            rideId: ride.id,
+            code: ride.code,
+            originCity: ride.originCity,
+            destCity: ride.destCity,
+            scheduledAt: ride.scheduledAt || scheduledAt.toISOString(),
+            value: ride.value,
+            type: ride.type,
+            serviceCities: parsedServiceCities,
+          }, allowedVehicleTypes, c.env)
+        })().catch(pushErr => {
+          console.error('[rides] Falha ao notificar motoristas após edição (não-crítico):', pushErr)
+        })
+      )
     }
 
     return c.json({ ride })
